@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pocket Arcade</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Arcade">
+<meta name="theme-color" content="#0d1124">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/arcade.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- MENU -->
+  <section id="menu" class="screen menu">
+    <header class="marquee">
+      <div class="brand">
+        <span class="coin" aria-hidden="true"></span>
+        <h1>Pocket Arcade</h1>
+      </div>
+      <button id="settingsBtn" class="icon-btn" data-nav aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 6h11v2H3zm14 0h4v2h-4v2h-2V4h2zM3 16h4v2H3zm8 0h10v2H11zm-2-2h2v6H9zM3 11h6v2H3zm10 0h8v2h-8zm-2-2h2v6h-2z"/></svg>
+      </button>
+    </header>
+
+    <div class="players-row">
+      <span class="label">Playing as</span>
+      <div id="players" class="players" role="group" aria-label="Who is playing"></div>
+    </div>
+
+    <p id="installHint" class="install" hidden>
+      Install on iPhone or iPad: tap <b>Share</b>, then <b>Add to Home Screen</b>. It will open full screen and work offline.
+      <button id="installDismiss" class="link-btn" data-nav>Got it</button>
+    </p>
+
+    <ul id="games" class="games" aria-label="Games"></ul>
+
+    <footer class="status">
+      <span id="padStatus">No controller · touch &amp; keys ready</span>
+      <span id="netStatus"></span>
+    </footer>
+  </section>
+
+  <!-- PLAY -->
+  <section id="play" class="screen play" hidden>
+    <canvas id="stage" aria-label="Game"></canvas>
+    <button id="pauseBtn" class="pause-btn" aria-label="Pause">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+    </button>
+    <div id="overlay" class="overlay" hidden></div>
+    <div class="rotate" aria-live="polite">
+      <svg viewBox="0 0 24 24" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M16.5 2h-9A1.5 1.5 0 0 0 6 3.5v17A1.5 1.5 0 0 0 7.5 22h9a1.5 1.5 0 0 0 1.5-1.5v-17A1.5 1.5 0 0 0 16.5 2zM16 18H8V5h8z"/></svg>
+      <p>Turn your device sideways</p>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-card" role="dialog" aria-labelledby="sheetTitle">
+      <div class="sheet-head">
+        <h2 id="sheetTitle">Settings</h2>
+        <button id="sheetClose" class="link-btn" data-nav>Done</button>
+      </div>
+
+      <fieldset>
+        <legend>Players</legend>
+        <label for="p0">Player 1</label><input id="p0" maxlength="12" autocomplete="off">
+        <label for="p1">Player 2</label><input id="p1" maxlength="12" autocomplete="off">
+      </fieldset>
+
+      <fieldset>
+        <legend>Sound</legend>
+        <label class="toggle"><input id="soundToggle" type="checkbox" data-nav> Sound effects</label>
+        <p class="fine">On iPhone the ring/silent switch also mutes game sound.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Backup</legend>
+        <div class="btn-row">
+          <button id="exportBtn" class="btn" data-nav>Export saves</button>
+          <button id="importBtn" class="btn ghost" data-nav>Import saves</button>
+          <input id="importFile" type="file" accept="application/json,.json" hidden>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Cloud sync (GitHub)</legend>
+        <p class="fine">Keeps scores and saves in step across your devices using a private GitHub repo. The token stays on this device and is never included in exports.</p>
+        <label for="ghRepo">Private repo</label><input id="ghRepo" placeholder="yourname/arcade-saves" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <label for="ghToken">Access token</label><input id="ghToken" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <div class="btn-row">
+          <button id="ghConnect" class="btn" data-nav>Connect</button>
+          <button id="ghSyncNow" class="btn ghost" data-nav hidden>Sync now</button>
+          <button id="ghDisconnect" class="btn ghost" data-nav hidden>Disconnect</button>
+        </div>
+        <p id="syncStatus" class="fine">Cloud sync is off. Saves live on this device.</p>
+      </fieldset>
+
+      <p class="fine version" id="versionLine"></p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</div>
+
+<script src="js/core.js"></script>
+<script src="js/sync.js"></script>
+<!-- Games: add one script tag per game file -->
+<script src="games/cave-flyer.js"></script>
+<script>Arcade.boot();</script>
+</body>
+</html>
