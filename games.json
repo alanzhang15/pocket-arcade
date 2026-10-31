@@ -1,0 +1,26 @@
+{
+  "games": [
+    {
+      "id": "cave-flyer",
+      "title": "Cave Flyer",
+      "blurb": "Hold to climb, let go to drop. The cave keeps closing in.",
+      "art": {
+        "cover": "games/cave-flyer/art/cover.png",
+        "wide": "games/cave-flyer/art/wide.png",
+        "hero": "games/cave-flyer/art/hero.png",
+        "logo": "games/cave-flyer/art/logo.png"
+      }
+    },
+    {
+      "id": "switchboard",
+      "title": "Switchboard",
+      "blurb": "Every switch flips its neighbours. Black out all ten boards in as few moves as you can.",
+      "art": {
+        "cover": "games/switchboard/art/cover.png",
+        "wide": "games/switchboard/art/wide.png",
+        "hero": "games/switchboard/art/hero.png",
+        "logo": "games/switchboard/art/logo.png"
+      }
+    }
+  ]
+}

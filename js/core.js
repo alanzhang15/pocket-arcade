@@ -1,17 +1,19 @@
-/* Pocket Arcade core: game registry, input (touch / keys / gamepad), audio, scores, saves, menu, service worker. */
+/* Pocket Arcade core: game registry, input (touch / mouse / keys / gamepad), audio, saves, menu, sync hook, service worker.
+   Games never touch this file. They call Arcade.register({...}) — see CLAUDE.md for the full contract. */
 (function () {
   'use strict';
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const $ = (s, el = document) => el.querySelector(s);
   const games = [];
   const LOGICAL_H = 360; // every game draws in a 360-unit-tall world; width follows the screen
+  const params = new URLSearchParams(location.search);
 
   /* ================= storage ================= */
   const KEY = 'pocket-arcade.v1';
   function readStore() { try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { return null; } }
   const data = Object.assign(
-    { v: 1, players: ['Player 1', 'Player 2'], playersAt: 0, active: 0, sound: true, scores: {}, saves: {}, updated: 0, hideInstall: false },
+    { v: 1, players: ['Player 1', 'Player 2'], playersAt: 0, active: 0, sound: true, showPerf: false, scores: {}, saves: {}, updated: 0, hideInstall: false },
     readStore() || {}
   );
   function persist(push = true) {
@@ -31,8 +33,19 @@
   }
   const bestOf = id => (data.scores[id] || [])[0] || null;
 
+  // Save slots: "main" (progress, unlocks, settings) lives at saves[id]; other slots at saves["id:slot"].
+  // The shell's autosave uses the "run" slot. Each slot is { at, v } so sync keeps the newest per slot;
+  // clearing writes { at, v: null } so the deletion also wins on other devices.
+  const slotKey = (id, slot) => (!slot || slot === 'main') ? id : `${id}:${slot}`;
+  function writeSlot(id, slot, value) { data.saves[slotKey(id, slot)] = { at: Date.now(), v: value === undefined ? null : value }; persist(); }
+  function readSlot(id, slot) {
+    const s = data.saves[slotKey(id, slot)];
+    if (s && typeof s === 'object' && 'v' in s && 'at' in s) return s.v;
+    return s === undefined ? null : s; // pre-1.1 saves stored the raw value
+  }
+
   /* Merge another copy of the data (from a backup file or cloud sync) into this one.
-     Scores: union of both top-10 lists. Each game's save and the player names: whichever copy changed last. */
+     Scores: union of both top-10 lists. Each save slot and the player names: whichever copy changed last. */
   function merge(other) {
     if (!other || typeof other !== 'object' || !other.scores) throw new Error('Not a Pocket Arcade save file');
     let changed = false;
@@ -56,40 +69,50 @@
 
   /* ================= cloud sync hook =================
      js/sync.js calls Arcade.useSync({ sync: async (localData, merge) => {...} }) or Arcade.useSync(null).
-     sync() should download the remote copy, call merge(remote), then upload localData if it differs.
-     It runs on launch, when the app returns to the foreground, when the network comes back,
-     and a moment after every new score or save. Offline changes simply wait for the next run. */
+     Runs on launch, on return to foreground, when the network comes back, and shortly after every score or save. */
   let sync = null, pushTimer = 0, retryTimer = 0, syncing = false, again = false;
   function syncNow() {
     if (!sync) return;
     clearTimeout(retryTimer);
-    if (!navigator.onLine) return syncStatus('Offline. Changes will sync when you reconnect.');
+    if (!navigator.onLine) return syncStatus('Offline. Changes will sync when you reconnect.', 'Offline · will sync later');
     if (syncing) { again = true; return; }
     syncing = true;
-    syncStatus('Syncing…');
+    syncStatus('Syncing…', 'Syncing…');
     sync.sync(data, remote => merge(remote))
       .then(() => {
-        syncStatus('Synced at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+        const t = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        syncStatus('Synced at ' + t, 'Synced ' + t);
         if (mode === 'menu') renderMenu();
       })
       .catch(err => {
-        syncStatus(`Sync failed: ${(err && err.message) || 'network error'}. Will retry.`);
+        syncStatus(`Sync failed: ${(err && err.message) || 'network error'}. Will retry.`, 'Sync failed · retrying');
         retryTimer = setTimeout(syncNow, 60000);
       })
       .finally(() => { syncing = false; if (again) { again = false; syncNow(); } });
   }
   function syncPush() { if (!sync) return; clearTimeout(pushTimer); pushTimer = setTimeout(syncNow, 1500); }
-  function syncStatus(msg) { const el = $('#syncStatus'); if (el) el.textContent = sync ? `Cloud sync: ${msg}` : 'Cloud sync is off. Saves live on this device.'; }
+  function syncStatus(msg, short) {
+    const el = $('#syncStatus'); if (el) el.textContent = sync ? `Cloud sync: ${msg}` : 'Cloud sync is off. Saves live on this device.';
+    const pill = $('#netStatus'); if (pill && sync && short) pill.textContent = short;
+    if (!sync) setNet();
+  }
 
   /* ================= input ================= */
-  const ACTIONS = ['up', 'down', 'left', 'right', 'a', 'b', 'start'];
+  const ACTIONS = ['up', 'down', 'left', 'right', 'a', 'b', 'x', 'y', 'l', 'r', 'start', 'select'];
   const KEYMAP = {
     ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
-    Space: 'a', Enter: 'a', KeyZ: 'a', KeyX: 'b', Backspace: 'b', Escape: 'start', KeyP: 'start'
+    Space: 'a', Enter: 'a', KeyZ: 'a', KeyX: 'b', Backspace: 'b', KeyC: 'x', KeyV: 'y', KeyQ: 'l', KeyE: 'r',
+    Escape: 'start', KeyP: 'start', KeyM: 'select'
   };
+  const PADMAP = { 0: 'a', 1: 'b', 2: 'x', 3: 'y', 4: 'l', 5: 'r', 6: 'l', 7: 'r', 8: 'select', 9: 'start', 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
   const kb = {}, touch = {}, latch = {};
   const held = {}, pressed = {};
-  let padName = '';
+  const stick = { x: 0, y: 0 }, stick2 = { x: 0, y: 0 };
+  let padName = '', lastPadUse = 0, dpadUsed = false;
+
+  // pointer (mouse / touch / trackpad, or the virtual cursor driven by the stick) in world units
+  const pointer = { x: 0, y: 0, down: false, pressed: false, released: false, active: false, virtual: false };
+  let ptrDown = false, ptrLatchDown = false, ptrLatchUp = false;
 
   addEventListener('keydown', e => {
     if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') return;
@@ -104,23 +127,30 @@
   addEventListener('keyup', e => { const a = KEYMAP[e.code]; if (a) kb[a] = false; });
   addEventListener('blur', () => { for (const a of ACTIONS) kb[a] = touch[a] = false; });
 
+  const dead = (x, y, dz = 0.18) => { const m = Math.hypot(x, y); if (m < dz) return [0, 0]; const k = Math.min(1, (m - dz) / (1 - dz)) / m; return [x * k, y * k]; };
+
   function pollPad() {
     const p = {};
+    dpadUsed = false;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     let name = '';
+    stick.x = stick.y = stick2.x = stick2.y = 0;
     for (const g of pads) {
       if (!g) continue;
       name = name || g.id;
-      const b = i => !!(g.buttons[i] && g.buttons[i].pressed);
+      for (const [i, a] of Object.entries(PADMAP)) if (g.buttons[i] && g.buttons[i].pressed) { p[a] = 1; if (i >= 12) dpadUsed = true; }
       const ax = g.axes || [];
-      if (b(0) || b(2)) p.a = 1;
-      if (b(1) || b(3)) p.b = 1;
-      if (b(8) || b(9)) p.start = 1;
-      if (b(12) || ax[1] < -0.5) p.up = 1;
-      if (b(13) || ax[1] > 0.5) p.down = 1;
-      if (b(14) || ax[0] < -0.5) p.left = 1;
-      if (b(15) || ax[0] > 0.5) p.right = 1;
+      const [lx, ly] = dead(ax[0] || 0, ax[1] || 0), [rx, ry] = dead(ax[2] || 0, ax[3] || 0);
+      if (Math.abs(lx) > Math.abs(stick.x)) stick.x = lx;
+      if (Math.abs(ly) > Math.abs(stick.y)) stick.y = ly;
+      if (Math.abs(rx) > Math.abs(stick2.x)) stick2.x = rx;
+      if (Math.abs(ry) > Math.abs(stick2.y)) stick2.y = ry;
     }
+    // the left stick also counts as the d-pad (menus, and games that only read directions)
+    if (stick.y < -0.5) p.up = 1;
+    if (stick.y > 0.5) p.down = 1;
+    if (stick.x < -0.5) p.left = 1;
+    if (stick.x > 0.5) p.right = 1;
     if (name !== padName) {
       padName = name;
       $('#padStatus').textContent = name ? `Controller: ${name.replace(/\(.*?\)/g, '').trim().slice(0, 32) || 'connected'}` : 'No controller · touch & keys ready';
@@ -128,17 +158,32 @@
     return p;
   }
 
-  function updateInput() {
+  function updateInput(dt) {
     const p = pollPad();
-    let any = false;
+    let padUsed = Math.abs(stick.x) + Math.abs(stick.y) > 0;
     for (const a of ACTIONS) {
       const h = !!(kb[a] || touch[a] || p[a] || latch[a]);
       pressed[a] = h && !held[a];
       held[a] = h;
       latch[a] = false;
-      if (pressed[a] && p[a]) any = true;
+      if (p[a]) padUsed = true;
     }
-    if (any) document.body.classList.add('kbnav');
+    if (padUsed) { document.body.classList.add('kbnav'); lastPadUse = performance.now(); }
+
+    // pointer: real pointer wins; in pointer games a controller drives a virtual cursor (stick moves, A clicks)
+    const wasDown = pointer.down;
+    if (def && def.pointer && (dpadUsed || ACTIONS.slice(0, 4).some(a => pressed[a] && kb[a]))) pointer.virtual = false; // d-pad/arrows: game's own highlight
+    if (def && def.pointer && (stick.x || stick.y) && !ptrDown) {
+      if (!pointer.virtual) { pointer.virtual = true; if (!pointer.active) { pointer.x = view.w / 2; pointer.y = view.h / 2; } }
+      const sp = 330 * (held.r ? 1.8 : 1);
+      pointer.x = Math.max(0, Math.min(view.w, pointer.x + stick.x * sp * dt));
+      pointer.y = Math.max(0, Math.min(view.h, pointer.y + stick.y * sp * dt));
+      pointer.active = true;
+    }
+    pointer.down = pointer.virtual ? !!(held.a || ptrDown) : ptrDown || ptrLatchDown;
+    pointer.pressed = (pointer.down && !wasDown) || ptrLatchDown;
+    pointer.released = (!pointer.down && wasDown) || ptrLatchUp;
+    ptrLatchDown = ptrLatchUp = false;
   }
 
   /* ================= audio ================= */
@@ -163,10 +208,16 @@
     o.connect(g).connect(ac.destination);
     o.start(t); o.stop(t + d + 0.02);
   }
+  const noiseCache = {};
   function noise({ d = 0.35, v = 0.25 } = {}) {
     if (!audioOk()) return;
-    const len = Math.floor(ac.sampleRate * d), buf = ac.createBuffer(1, len, ac.sampleRate), ch = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const key = d.toFixed(2);
+    let buf = noiseCache[key];
+    if (!buf) {
+      const len = Math.floor(ac.sampleRate * d); buf = ac.createBuffer(1, len, ac.sampleRate); const ch = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      noiseCache[key] = buf;
+    }
     const s = ac.createBufferSource(), g = ac.createGain();
     s.buffer = buf; g.gain.value = v;
     s.connect(g).connect(ac.destination); s.start();
@@ -174,36 +225,55 @@
 
   /* ================= stage ================= */
   const view = { w: 640, h: LOGICAL_H, scale: 1 };
-  let canvas, ctx;
+  let canvas, ctx, dirty = true;
   function resize() {
     if (!canvas) return;
     const r = canvas.getBoundingClientRect();
     if (!r.width || !r.height) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    canvas.width = Math.round(r.width * dpr);
-    canvas.height = Math.round(r.height * dpr);
+    if (def && def.pixelated) {
+      // render at 360 rows and let the GPU scale up: far fewer pixels to fill, crisp pixel art
+      canvas.height = LOGICAL_H;
+      canvas.width = Math.round(r.width * LOGICAL_H / r.height);
+    } else {
+      const dpr = Math.min(window.devicePixelRatio || 1, def && def.maxDpr || 2);
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+    }
+    canvas.classList.toggle('pixel', !!(def && def.pixelated));
     view.scale = canvas.height / LOGICAL_H;
     view.w = canvas.width / view.scale;
     view.h = LOGICAL_H;
+    dirty = true;
     if (game && game.resize) game.resize(view);
+  }
+  function toWorld(e) {
+    const r = canvas.getBoundingClientRect();
+    return [(e.clientX - r.left) * (canvas.width / r.width) / view.scale, (e.clientY - r.top) * (canvas.height / r.height) / view.scale];
   }
 
   /* ================= game session ================= */
   let mode = 'menu';   // 'menu' | 'game'
   let sub = 'play';    // 'play' | 'paused' | 'over'
-  let def = null, game = null, overTimer = 0;
+  let def = null, game = null, overTimer = 0, autosaveAt = 0;
 
   function makeApi(d) {
     return {
       view,
-      input: { held, pressed },
+      input: { held, pressed, stick, stick2 },
+      pointer,
       sfx: { tone, noise },
       player: () => data.players[data.active],
       best: () => bestOf(d.id),
-      save: obj => { data.saves[d.id] = { at: Date.now(), v: obj }; persist(); },
-      load: () => { const s = data.saves[d.id]; return s && typeof s === 'object' && 'v' in s ? s.v : s; },
+      save: (obj, slot) => writeSlot(d.id, slot, obj),
+      load: slot => readSlot(d.id, slot),
+      requestDraw: () => { dirty = true; },
       gameOver: score => { if (sub === 'play') showOver(score); }
     };
+  }
+
+  function autosave() {
+    if (!game || !def || typeof game.getState !== 'function' || sub === 'over') return;
+    try { const s = game.getState(); if (s !== undefined) writeSlot(def.id, 'run', s); } catch (e) { console.warn('getState failed', e); }
   }
 
   function startGame(d) {
@@ -214,13 +284,17 @@
     play.hidden = false;
     play.classList.toggle('landscape', d.orientation === 'landscape');
     hideOverlay();
+    pointer.virtual = false; pointer.active = false;
     resize();
     game = d.create(makeApi(d));
     if (game.resize) game.resize(view);
+    dirty = true; autosaveAt = performance.now() + 30000; frameAcc = 0;
     unlockAudio();
+    scheduleNext();
   }
 
   function quitGame() {
+    autosave();
     mode = 'menu'; game = null; def = null;
     hideOverlay();
     $('#play').hidden = true;
@@ -231,6 +305,7 @@
 
   function pause() {
     if (mode !== 'game' || sub !== 'play') return;
+    autosave();
     sub = 'paused';
     showPanel(`
       <h2>Paused</h2>
@@ -241,10 +316,11 @@
       </div>
       <p class="hint">${esc(def.controls || '')}</p>`);
   }
-  function resume() { if (sub === 'paused') { sub = 'play'; hideOverlay(); } }
+  function resume() { if (sub === 'paused') { sub = 'play'; hideOverlay(); dirty = true; } }
 
   function showOver(score) {
     sub = 'over';
+    if (typeof game.getState === 'function') writeSlot(def.id, 'run', null); // the run is finished
     const { entry, rank, list } = addScore(def.id, score);
     const rows = list.slice(0, 5).map((e, i) =>
       `<li class="${e === entry ? 'me' : ''}"><span>${i + 1}</span><span>${esc(e.name)}</span><span class="s">${fmt(e.score)}</span></li>`).join('');
@@ -257,8 +333,7 @@
         <button class="btn" data-nav data-act="restart">Play again</button>
         <button class="btn ghost" data-nav data-act="menu">Back to games</button>
       </div>`);
-    // brief guard so a held button doesn't instantly hit "Play again"
-    overTimer = performance.now() + 450;
+    overTimer = performance.now() + 450; // a held button shouldn't instantly hit "Play again"
   }
 
   function showPanel(html) {
@@ -272,58 +347,131 @@
 
   function overlayAction(act) {
     if (act === 'resume') resume();
-    else if (act === 'restart') { hideOverlay(); startGame(def); }
+    else if (act === 'restart') { hideOverlay(); writeSlot(def.id, 'run', null); startGame(def); }
     else if (act === 'menu') quitGame();
   }
 
-  /* ================= focus navigation (controller / keyboard) ================= */
+  /* ================= focus navigation (d-pad, left stick, keyboard) =================
+     Spatial: up/down/left/right moves to the nearest control in that direction. Holding repeats. */
   const nav = {
-    root: null, i: 0,
-    items() { return this.root ? [...this.root.querySelectorAll('[data-nav]:not([hidden])')].filter(el => el.offsetParent) : []; },
-    reset(root) { this.root = root; this.i = 0; this.paint(); },
-    move(dir) {
-      const items = this.items(); if (!items.length) return;
-      this.i = (this.i + dir + items.length) % items.length; this.paint();
-      items[this.i].scrollIntoView({ block: 'nearest' });
+    root: null, el: null,
+    items() { return this.root ? [...this.root.querySelectorAll('[data-nav]:not([hidden]):not([disabled])')].filter(el => el.offsetParent) : []; },
+    reset(root) { this.root = root; this.el = null; this.paint(); },
+    current() { const items = this.items(); if (!this.el || !items.includes(this.el)) this.el = items[0] || null; return this.el; },
+    go(dir) {
+      const items = this.items(), cur = this.current(); if (!cur) return;
+      const a = cur.getBoundingClientRect(), ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+      // nearest row (or column) in that direction first, then the closest control within it
+      const cands = [];
+      for (const el of items) {
+        if (el === cur) continue;
+        const b = el.getBoundingClientRect(), bx = b.left + b.width / 2, by = b.top + b.height / 2;
+        const dx = bx - ax, dy = by - ay;
+        const main = dir === 'up' ? -dy : dir === 'down' ? dy : dir === 'left' ? -dx : dx;
+        const side = dir === 'up' || dir === 'down' ? Math.abs(dx) : Math.abs(dy);
+        if (main > 4) cands.push({ el, main, side });
+      }
+      let best = null;
+      if (cands.length) {
+        const nearest = Math.min(...cands.map(c => c.main));
+        best = cands.filter(c => c.main <= nearest + 16).sort((p, q) => p.side - q.side)[0].el;
+      }
+      if (!best) { // wrap vertically through the list so nothing is unreachable
+        const i = items.indexOf(cur);
+        if (dir === 'down' || dir === 'right') best = items[(i + 1) % items.length];
+        else best = items[(i - 1 + items.length) % items.length];
+      }
+      this.el = best; this.paint();
+      best.scrollIntoView({ block: 'nearest' });
+      tone({ f: 660, d: 0.03, v: 0.04 });
     },
     paint() {
       document.querySelectorAll('.focus').forEach(el => el.classList.remove('focus'));
-      const el = this.items()[this.i]; if (el) el.classList.add('focus');
+      const el = this.current(); if (el) el.classList.add('focus');
     },
-    activate() { const el = this.items()[this.i]; if (el) el.click(); }
+    activate() { const el = this.current(); if (el) { if (el.matches('input:not([type="checkbox"])')) el.focus(); else el.click(); } }
   };
-  function stepNav() {
-    if (pressed.up || pressed.left) nav.move(-1);
-    if (pressed.down || pressed.right) nav.move(1);
+  const rep = { dir: null, next: 0 };
+  function navDirection(now) {
+    const dir = ['up', 'down', 'left', 'right'].find(d => held[d]);
+    if (!dir) { rep.dir = null; return null; }
+    if (dir !== rep.dir || pressed[dir]) { rep.dir = dir; rep.next = now + 380; return dir; }
+    if (now >= rep.next) { rep.next = now + 110; return dir; }
+    return null;
+  }
+  function stepNav(now) {
+    const d = navDirection(now);
+    if (d) nav.go(d);
     if (pressed.a) nav.activate();
   }
 
-  /* ================= main loop ================= */
-  let last = 0;
-  function frame(t) {
-    const dt = Math.min((t - last) / 1000 || 0, 1 / 20);
+  /* ================= main loop =================
+     Battery: in menus the loop ticks at ~30 Hz; in games it follows the display but only updates/draws
+     at the game's fps; "onDemand" games only redraw after api.requestDraw() or input; nothing redraws
+     behind the pause or game-over panels. */
+  let last = 0, frameAcc = 0, scheduled = false, perfFrames = 0, perfMs = 0, perfDraws = 0, perfT = 0;
+  function scheduleNext() {
+    if (scheduled) return;
+    scheduled = true;
+    if (mode === 'game' && sub === 'play') requestAnimationFrame(tick);
+    else setTimeout(() => tick(performance.now()), 33);
+  }
+  function tick(t) {
+    scheduled = false;
+    const raw = Math.min((t - last) / 1000 || 0, 1 / 15);
     last = t;
-    updateInput();
-    if (!$('#sheet').hidden) {
-      if (pressed.b || pressed.start) closeSheet(); else stepNav();
+    if (document.hidden) return scheduleNext();
+    updateInput(raw);
+    const sheetOpen = !$('#sheet').hidden;
+    if (sheetOpen) {
+      if (pressed.b || pressed.start) closeSheet(); else stepNav(t);
     } else if (mode === 'menu') {
-      stepNav();
+      if (pressed.select || pressed.y) openSheet(); else stepNav(t);
     } else if (game) {
       if (sub === 'play') {
         if (pressed.start) pause();
-        else game.update(dt);
+        else {
+          const fps = def.fps || 60;
+          frameAcc += raw;
+          if (fps >= 60 || frameAcc >= 1 / fps - 0.002) {
+            const dt = fps >= 60 ? raw : Math.min(frameAcc, 1 / 15);
+            frameAcc = 0;
+            const t0 = performance.now();
+            const changed = game.update(dt);
+            const anyInput = ACTIONS.some(a => pressed[a]) || pointer.pressed || pointer.released || (pointer.virtual && (stick.x || stick.y));
+            if (def.redraw !== 'onDemand' || dirty || changed === true || anyInput) {
+              ctx.setTransform(view.scale, 0, 0, view.scale, 0, 0);
+              game.draw(ctx, view);
+              if (pointer.virtual && pointer.active) drawCursor();
+              dirty = false; perfDraws++;
+            }
+            perfMs += performance.now() - t0; perfFrames++;
+            if (t > autosaveAt) { autosave(); autosaveAt = t + 30000; }
+          }
+        }
       } else if (sub === 'paused') {
-        if (pressed.start || pressed.b) resume(); else stepNav();
+        if (pressed.start || pressed.b) resume(); else stepNav(t);
       } else if (sub === 'over' && t > overTimer) {
-        if (pressed.b) quitGame(); else stepNav();
-      }
-      if (game) {
-        ctx.setTransform(view.scale, 0, 0, view.scale, 0, 0);
-        game.draw(ctx, view);
+        if (pressed.b) quitGame(); else stepNav(t);
       }
     }
-    requestAnimationFrame(frame);
+    if (perfOn && t - perfT > 500) {
+      const el = $('#perfHud');
+      const secs = (t - perfT) / 1000;
+      el.textContent = mode === 'game' ? `${Math.round(perfFrames / secs)} upd/s · ${Math.round(perfDraws / secs)} draw/s · ${(perfMs / Math.max(1, perfFrames)).toFixed(2)} ms` : 'menu · 30 Hz';
+      perfFrames = perfMs = perfDraws = 0; perfT = t;
+    }
+    scheduleNext();
   }
+  function drawCursor() {
+    const x = pointer.x, y = pointer.y;
+    ctx.save(); ctx.translate(x, y);
+    ctx.fillStyle = '#e9ecff'; ctx.strokeStyle = '#0d1124'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 15); ctx.lineTo(4, 11); ctx.lineTo(7, 17); ctx.lineTo(9.5, 16); ctx.lineTo(6.5, 10); ctx.lineTo(11, 10); ctx.closePath();
+    ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+  let perfOn = false;
+  function setPerf(on) { perfOn = on; $('#perfHud').hidden = !on; }
 
   /* ================= menu ================= */
   function renderMenu() {
@@ -336,13 +484,14 @@
     for (const d of games) {
       const li = document.createElement('li');
       const best = bestOf(d.id);
+      const hasRun = readSlot(d.id, 'run') != null;
       li.innerHTML = `
         <button class="card" data-nav data-game="${d.id}">
           <canvas width="224" height="168" aria-hidden="true"></canvas>
           <span class="meta">
             <h3>${esc(d.title)}</h3>
             <p>${esc(d.blurb || '')}</p>
-            <span class="best ${best ? '' : 'none'}">${best ? `BEST ${fmt(best.score)} · ${esc(best.name)}` : 'NO SCORE YET'}</span>
+            <span class="best ${best ? '' : 'none'}">${hasRun ? 'CONTINUE · ' : ''}${best ? `BEST ${fmt(best.score)} · ${esc(best.name)}` : 'NO SCORE YET'}</span>
           </span>
         </button>`;
       ul.appendChild(li);
@@ -351,8 +500,10 @@
       if (d.thumb) try { d.thumb(x, 112, 84); } catch (e) { /* thumbnail is decorative */ }
     }
     if (mode === 'menu' && $('#sheet').hidden) {
-      const keep = nav.root === $('#menu') ? nav.i : 0;
-      nav.reset($('#menu')); nav.i = Math.min(keep, nav.items().length - 1); nav.paint();
+      const keep = nav.root === $('#menu') && nav.el ? nav.el.dataset.game || nav.el.dataset.player : null;
+      nav.reset($('#menu'));
+      nav.el = (keep && nav.items().find(el => el.dataset.game === keep || el.dataset.player === keep)) || $('#games [data-game]');
+      nav.paint();
     }
   }
 
@@ -360,13 +511,17 @@
     $('#p0').value = data.players[0];
     $('#p1').value = data.players[1];
     $('#soundToggle').checked = !!data.sound;
+    $('#perfToggle').checked = !!data.showPerf;
     $('#sheet').hidden = false;
     nav.reset($('#sheet'));
   }
   function closeSheet() {
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     const names = [($('#p0').value.trim() || 'Player 1').slice(0, 12), ($('#p1').value.trim() || 'Player 2').slice(0, 12)];
     if (names.join('|') !== data.players.join('|')) { data.players = names; data.playersAt = Date.now(); }
     data.sound = $('#soundToggle').checked;
+    data.showPerf = $('#perfToggle').checked;
+    setPerf(data.showPerf || params.has('perf'));
     persist();
     $('#sheet').hidden = true;
     renderMenu();
@@ -427,13 +582,13 @@
           }
         });
       });
-      // check for updates when the app returns to the foreground
       document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
       navigator.serviceWorker.ready.then(setNet);
     }).catch(() => { /* hosting without SW support (e.g. preview) */ });
   }
   function setNet() {
     const el = $('#netStatus');
+    if (sync) return; // the sync pill owns this slot when sync is on
     if (!navigator.onLine) el.textContent = 'Offline · games still work';
     else if (navigator.serviceWorker && navigator.serviceWorker.controller) el.textContent = 'Saved for offline play';
     else el.textContent = '';
@@ -448,20 +603,37 @@
   /* ================= boot ================= */
   function boot() {
     canvas = $('#stage');
-    ctx = canvas.getContext('2d');
+    ctx = canvas.getContext('2d', { alpha: false });
 
-    // touch / mouse on the stage = the A button (one-button games); games can read pointer positions themselves too
+    // Touch / mouse on the stage: in pointer games it's the pointer; otherwise it's the A button (one-button games).
     const pointers = new Set();
     canvas.addEventListener('pointerdown', e => {
       e.preventDefault(); pointers.add(e.pointerId);
-      if (!touch.a) latch.a = true;
-      touch.a = true;
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
       document.body.classList.remove('kbnav');
+      if (def && def.pointer) {
+        [pointer.x, pointer.y] = toWorld(e); pointer.active = true; pointer.virtual = false;
+        if (!ptrDown) ptrLatchDown = true;
+        ptrDown = true;
+      } else {
+        if (!touch.a) latch.a = true;
+        touch.a = true;
+      }
     });
-    const up = e => { pointers.delete(e.pointerId); if (!pointers.size) touch.a = false; };
+    canvas.addEventListener('pointermove', e => {
+      if (!def || !def.pointer) return;
+      if (e.pointerType === 'mouse' && performance.now() - lastPadUse < 300 && pointer.virtual) return;
+      [pointer.x, pointer.y] = toWorld(e); pointer.active = true; pointer.virtual = false;
+    });
+    const up = e => {
+      pointers.delete(e.pointerId);
+      if (!pointers.size) {
+        touch.a = false;
+        if (ptrDown) { ptrDown = false; ptrLatchUp = true; }
+      }
+    };
     canvas.addEventListener('pointerup', up);
     canvas.addEventListener('pointercancel', up);
-    canvas.addEventListener('pointerleave', up);
     // stop iOS pinch / long-press / double-tap behaviours while playing
     ['gesturestart', 'gesturechange', 'dblclick', 'contextmenu'].forEach(t => document.addEventListener(t, e => e.preventDefault()));
     document.addEventListener('touchmove', e => { if (mode === 'game') e.preventDefault(); }, { passive: false });
@@ -482,6 +654,7 @@
     $('#importBtn').addEventListener('click', () => $('#importFile').click());
     $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importSaves(e.target.files[0]); e.target.value = ''; });
     $('#versionLine').textContent = `Pocket Arcade ${VERSION} · ${games.length} game${games.length === 1 ? '' : 's'}`;
+    setPerf(!!data.showPerf || params.has('perf'));
 
     if (!window.ARCADE_PREVIEW && isIOS() && !isStandalone() && !data.hideInstall) $('#installHint').hidden = false;
     $('#installDismiss').addEventListener('click', () => { data.hideInstall = true; persist(); $('#installHint').hidden = true; renderMenu(); });
@@ -489,22 +662,23 @@
     addEventListener('resize', resize);
     addEventListener('orientationchange', () => setTimeout(resize, 200));
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) { pause(); for (const a of ACTIONS) kb[a] = touch[a] = false; }
+      if (document.hidden) { pause(); autosave(); for (const a of ACTIONS) kb[a] = touch[a] = false; }
       else syncNow();
     });
+    addEventListener('pagehide', autosave);
     addEventListener('online', () => { setNet(); syncNow(); });
-    addEventListener('offline', setNet);
+    addEventListener('offline', () => { setNet(); if (sync) syncStatus('Offline. Changes will sync when you reconnect.', 'Offline · will sync later'); });
     addEventListener('gamepadconnected', () => toast('Controller connected'));
 
     renderMenu();
     registerSW();
     setNet();
     syncNow();
-    requestAnimationFrame(frame);
+    scheduleNext();
 
     // Direct launch: index.html#cave-flyer (or ?game=cave-flyer) opens straight into that game.
     const openFromLink = () => {
-      const want = decodeURIComponent((location.hash || '').slice(1)) || new URLSearchParams(location.search).get('game');
+      const want = decodeURIComponent((location.hash || '').slice(1)) || params.get('game');
       const direct = games.find(g => g.id === want);
       if (direct && mode === 'menu') startGame(direct);
     };
@@ -516,11 +690,12 @@
     VERSION,
     register(d) {
       if (!d || !d.id || typeof d.create !== 'function') throw new Error('Arcade.register needs { id, title, create(api) }');
+      if (games.some(g => g.id === d.id)) throw new Error(`Duplicate game id: ${d.id}`);
       games.push(d);
     },
-    useSync(s) { sync = s || null; syncStatus(sync ? 'connecting…' : ''); },
+    useSync(s) { sync = s || null; syncStatus(sync ? 'connecting…' : '', sync ? 'Connecting…' : ''); },
     syncNow,
     boot,
-    _debug: { data, merge, games, game: () => game } // handy in the browser console
+    _debug: { data, merge, games, game: () => game, def: () => def, state: () => ({ mode, sub }), pointer, view } // for the console and tests
   };
 })();

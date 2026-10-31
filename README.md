@@ -13,60 +13,39 @@ Touch, keyboard, and Bluetooth controllers (Joy-Con, Xbox, PlayStation) all work
 
 ## Add a game
 
-1. Create `games/<your-game>.js` that calls `Arcade.register({...})` (copy `games/cave-flyer.js` as a template).
-2. Add `<script src="games/<your-game>.js"></script>` to `index.html` next to the others.
-3. Run `python3 tools/build.py` (refreshes the offline file list and version), then upload.
-   Installed copies show an **Update** button the next time they open online.
-
-### Game API
-
-```js
-Arcade.register({
-  id: 'my-game', title: 'My Game', blurb: 'One line for the menu card',
-  controls: 'Shown on the pause screen', orientation: 'any' | 'landscape',
-  thumb(ctx, w, h) { /* optional menu-card art, 112x84 */ },
-  create(api) {
-    // api.view.w / api.view.h  world size (height is always 360, width follows the screen)
-    // api.input.held.a / api.input.pressed.a   actions: up down left right a b start
-    // api.sfx.tone({f, to, d, type, v}), api.sfx.noise({d, v})
-    // api.best(), api.player(), api.save(obj), api.load(), api.gameOver(score)
-    return { update(dt) {}, draw(ctx, view) {}, resize(view) {} };
-  }
-});
-```
-
-Tapping or holding anywhere on the screen counts as the **A** button. The shell handles pause
-(button, Esc, or controller Start), auto-pause when the app is backgrounded, high scores per player,
-the game-over screen, and controller navigation of every menu.
+Ask Claude in a session with this repo attached ("make a game where…", "port <old game>"). The repo's
+`CLAUDE.md` and skills (`.claude/skills/`) tell it how to build, test, make Steam art, and publish.
+By hand: create `games/<id>/game.js` (copy a reference game), then run
+`python3 tools/build.py`, `node tools/test-game.mjs <id>`, `node tools/render-art.mjs <id>`, and push.
 
 ## Launch a game directly
 
-Add the game's id after a `#`: `https://<you>.github.io/pocket-arcade/#cave-flyer` opens straight into Cave Flyer.
-The plain URL opens the arcade menu. Every game shares the same saves, scores, and sync.
+`https://alanzhang15.github.io/pocket-arcade/#<id>` opens straight into that game; the plain URL opens the menu.
 
-## Steam Deck: one library tile per game
+## Steam Deck tiles (one command, re-run for new games)
 
-1. Desktop Mode → **Discover** → install **Google Chrome**.
-2. Steam (desktop) → **Games → Add a Non-Steam Game to My Library** → tick Google Chrome → Add.
-   Repeat once per game (and once more if you want an all-games Arcade tile).
-3. For each new Chrome entry: right-click → **Properties**.
-   - Name it (e.g. `Cave Flyer`).
-   - In **Launch Options**, keep the existing text and add this at the very end, after `@@u @@`:
-     ```
-     --kiosk --autoplay-policy=no-user-gesture-required "https://<you>.github.io/pocket-arcade/#cave-flyer"
-     ```
-   (`--autoplay-policy` lets sound start from a controller press; Chrome otherwise waits for a tap or key.)
-4. Back in Gaming Mode, for each tile: controller icon → choose the **Gamepad** layout (not "Web Browser").
-5. Artwork: in Desktop Mode, right-click the game in Steam's library → **Manage → Set custom artwork**
-   for the cover, and on the game's page right-click the banner to set the background and logo.
-   Files are in `steam-art/<game>/`:
-   - `cover-600x900.png` → library cover (portrait)
-   - `wide-920x430.png` → wide capsule / recently played
-   - `hero-1920x620.png` → game page background
-   - `logo-1280x360.png` → game page logo
+In Desktop Mode, open **Konsole** and run:
 
-Launch a tile online once and the game is cached for offline play. Quit with the Steam button → **Exit game**.
-Close any normal Chrome window first: if Chrome is already open, a tile may open as a regular window.
+```
+curl -fsSL https://alanzhang15.github.io/pocket-arcade/deck/arcade-tiles.py | python3 -
+```
+
+It closes Steam briefly, adds a tile for every game plus a **Pocket Arcade** menu tile (with cover, banner,
+background, logo and icon), updates tiles you made by hand, removes tiles for games that were deleted,
+backs up your shortcuts file, and reopens Steam. It also puts an **Update Arcade Tiles** icon on the
+desktop for next time. Needs Google Chrome from Discover.
+
+Once per new tile, in Gaming Mode: tile → controller icon → **Gamepad** (point-and-click games:
+**Gamepad with Mouse Trackpad**). Steam doesn't let outside tools set that part.
+
+Controls everywhere: d-pad or left stick moves through menus, A selects, B goes back, Start pauses,
+Select (or Y) opens settings from the menu.
+
+## Battery
+
+Games follow the budget in `CLAUDE.md` (tested by `tools/test-game.mjs`). On the Deck, the Quick Access
+menu → Performance lets you set a per-game profile: 60 Hz refresh and a 60 fps limit suit every arcade
+game; turn-based games are fine at 30. Settings → **Show frame rate** displays the arcade's own numbers.
 
 ## Saves and sync
 
