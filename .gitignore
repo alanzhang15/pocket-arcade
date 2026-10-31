@@ -1,3 +1,5 @@
 preview/
 .DS_Store
 test-output/
+__pycache__/
+*.pyc
