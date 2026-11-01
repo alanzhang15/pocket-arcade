@@ -106,13 +106,15 @@
   };
   const PADMAP = { 0: 'a', 1: 'b', 2: 'x', 3: 'y', 4: 'l', 5: 'r', 6: 'l', 7: 'r', 8: 'select', 9: 'start', 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
   const kb = {}, touch = {}, latch = {};
-  const held = {}, pressed = {};
+  // pressed = edges this tick (shell menus, pause); gamePressed = edges since the game's last update(), so games
+  // running below the display rate (fps: 30) never miss a quick tap that lands on a skipped tick
+  const held = {}, pressed = {}, gamePressed = {};
   const stick = { x: 0, y: 0 }, stick2 = { x: 0, y: 0 };
   let padName = '', lastPadUse = 0, dpadUsed = false;
 
   // pointer (mouse / touch / trackpad, or the virtual cursor driven by the stick) in world units
   const pointer = { x: 0, y: 0, down: false, pressed: false, released: false, active: false, virtual: false };
-  let ptrDown = false, ptrLatchDown = false, ptrLatchUp = false;
+  let ptrDown = false, ptrLatchDown = false, ptrLatchUp = false, ptrPressed = false, ptrReleased = false;
 
   addEventListener('keydown', e => {
     if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') return;
@@ -181,9 +183,25 @@
       pointer.active = true;
     }
     pointer.down = pointer.virtual ? !!(held.a || ptrDown) : ptrDown || ptrLatchDown;
-    pointer.pressed = (pointer.down && !wasDown) || ptrLatchDown;
-    pointer.released = (!pointer.down && wasDown) || ptrLatchUp;
+    ptrPressed = (pointer.down && !wasDown) || ptrLatchDown;
+    // a tap inside one tick shows as down this tick and releases on the next; the latch only matters for
+    // an up + down again within one tick, which would otherwise hide the release
+    ptrReleased = wasDown && (!pointer.down || ptrLatchUp);
     ptrLatchDown = ptrLatchUp = false;
+  }
+  // collect this tick's edges for the game; cleared once the game has updated (and drawn) with them
+  function gatherGameEdges() {
+    for (let i = 0; i < ACTIONS.length; i++) if (pressed[ACTIONS[i]]) gamePressed[ACTIONS[i]] = true;
+    if (ptrPressed) pointer.pressed = true;
+    if (ptrReleased) pointer.released = true;
+  }
+  function anyGameEdge() {
+    for (let i = 0; i < ACTIONS.length; i++) if (gamePressed[ACTIONS[i]]) return true;
+    return pointer.pressed || pointer.released;
+  }
+  function clearGameEdges() {
+    for (let i = 0; i < ACTIONS.length; i++) gamePressed[ACTIONS[i]] = false;
+    pointer.pressed = pointer.released = false;
   }
 
   /* ================= audio ================= */
@@ -259,7 +277,7 @@
   function makeApi(d) {
     return {
       view,
-      input: { held, pressed, stick, stick2 },
+      input: { held, pressed: gamePressed, stick, stick2 },
       pointer,
       sfx: { tone, noise },
       player: () => data.players[data.active],
@@ -285,6 +303,7 @@
     play.classList.toggle('landscape', d.orientation === 'landscape');
     hideOverlay();
     pointer.virtual = false; pointer.active = false;
+    clearGameEdges();
     resize();
     game = d.create(makeApi(d));
     if (game.resize) game.resize(view);
@@ -307,6 +326,7 @@
     if (mode !== 'game' || sub !== 'play') return;
     autosave();
     sub = 'paused';
+    clearGameEdges();
     showPanel(`
       <h2>Paused</h2>
       <div class="btn-col">
@@ -432,19 +452,21 @@
         if (pressed.start) pause();
         else {
           const fps = def.fps || 60;
+          gatherGameEdges();
           frameAcc += raw;
           if (fps >= 60 || frameAcc >= 1 / fps - 0.002) {
             const dt = fps >= 60 ? raw : Math.min(frameAcc, 1 / 15);
             frameAcc = 0;
             const t0 = performance.now();
             const changed = game.update(dt);
-            const anyInput = ACTIONS.some(a => pressed[a]) || pointer.pressed || pointer.released || (pointer.virtual && (stick.x || stick.y));
+            const anyInput = anyGameEdge() || (pointer.virtual && (stick.x || stick.y));
             if (def.redraw !== 'onDemand' || dirty || changed === true || anyInput) {
               ctx.setTransform(view.scale, 0, 0, view.scale, 0, 0);
               game.draw(ctx, view);
               if (pointer.virtual && pointer.active) drawCursor();
               dirty = false; perfDraws++;
             }
+            clearGameEdges();
             perfMs += performance.now() - t0; perfFrames++;
             if (t > autosaveAt) { autosave(); autosaveAt = t + 30000; }
           }
