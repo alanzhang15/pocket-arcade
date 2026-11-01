@@ -37,6 +37,29 @@ filled up. Surface ascents and descents have a fixed Δv and time.
   4/8/16/24 h after you were last in the game (Fleet Autonomy). Opening the game resumes them.
 - **Sandbox**: never calls `gameOver`; metrics on the Stats screen.
 
+## Ship screen and upgrades
+Opening a ship shows it front and center as a pixel cutaway: passengers sit in seat and cabin modules, crates fill
+cargo racks, and each loaded slot is labelled with its destination. A or a tap on a slot unloads it. **Upgrade** (at a
+shipyard, or anywhere after Modular Hulls) offers:
+- Tanks: +15% propellant per level, 3 levels.
+- Engines: +10% thrust per level, 3 levels.
+- Hull extension: +1 cargo module, 2 levels, not on fixed layouts.
+- Comfort: +8% passenger fares per level, 3 levels.
+- Livery colours, slot refits and selling.
+
+Each upgrade costs credits plus one part of the ship's drive family, two parts from level 2.
+
+## Art
+All in-game art is generated in code at startup, with no image files, so the game stays one offline file:
+- **Planets:** `bodyCanvas()` draws them pixel by pixel with ordered dithering, at 1 pixel per world unit.
+- **Ships:** `shipCanvas()` assembles each one from modules (engine by drive family, propellant tank, one module per
+  slot, bow by design style in `DSTYLE`). It renders three sizes: `map`, `big` (closed hull) and `cut` (cutaway).
+  Every refit, hull extension, tank upgrade and livery therefore gets its own sprite.
+- **Passengers, crates, plumes and node icons:** small pixel maps (`paxCanvas`, `crateCanvas`, `plumeCanvas`,
+  `pixCanvas`).
+
+`games/sol-tycoon/art/` only holds the Steam library images that `tools/render-art.mjs` makes from `art()`.
+
 ## Code map (`game.js`)
 `TUNE` and DATA tables (nodes, edges, jobs, tech, ships) → `SIM` (pure functions of the company and `now`: planner,
 burn physics, the event clock, catch-up) → `Arcade.register` (pixel art, widgets, screens, input). The company lives

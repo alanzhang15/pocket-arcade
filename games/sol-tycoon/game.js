@@ -432,8 +432,20 @@
     c.nm++;
     return lap ? `${base} ${['II', 'III', 'IV', 'V', 'VI'][Math.min(4, lap - 1)]}` : base;
   }
+  // ship upgrades: u = [tanks, engines, hull extension, comfort]; lv livery; sp credits spent on upgrades
+  const SHIP_UP = [
+    { n: 'Tanks', max: 3, k: 0.15, part: 0, d: '+15% propellant per level' },
+    { n: 'Engines', max: 3, k: 0.15, part: 1, d: '+10% thrust per level: faster hard burns' },
+    { n: 'Hull extension', max: 2, k: 0.25, part: 0, d: 'Adds a cargo module (refit it to seats or cabins)' },
+    { n: 'Comfort fit-out', max: 3, k: 0.1, part: 2, d: '+8% passenger fares per level' }
+  ];
+  const LIVERY = ['#ffb547', '#5ce1e6', '#ff5d8f', '#7ee0a1', '#c9b8ff', '#d9643a'];
+  const shipDry = s => { const D = DS[s.d]; return D.dry * (1 + 0.04 * s.u[0]) + s.u[2] * 0.6 * D.dry / D.cfg.length; };
+  const shipFuel = s => DS[s.d].fuel * (1 + 0.15 * s.u[0]);
+  const shipF = s => DS[s.d].F * (1 + 0.1 * s.u[1]);
   function addShip(c, d, at) {
-    const s = { i: c.nid++, d, nm: shipName(c), cf: DS[d].cfg, st: 0, at, fu: DS[d].fuel, ld: [], f: null, rt: null, wt: 0 };
+    const s = { i: c.nid++, d, nm: shipName(c), cf: DS[d].cfg, st: 0, at, fu: DS[d].fuel, ld: [], f: null, rt: null, wt: 0, u: [0, 0, 0, 0], lv: 0, sp: 0 };
+    s.lv = s.i % LIVERY.length;
     c.sh.push(s);
     dockOrHold(c, s, at);
     return s;
@@ -477,7 +489,7 @@
     return v;
   }
   function dvCap(c, s) {
-    const D = DS[s.d], dry = D.dry + loadMass(s.ld), f = depotAt(c, s.at) && !s.f ? D.fuel : s.fu;
+    const D = DS[s.d], dry = shipDry(s) + loadMass(s.ld), f = depotAt(c, s.at) && !s.f ? shipFuel(s) : s.fu;
     return f > 0 ? veOf(c, D) * Math.log((dry + f) / dry) : 0;
   }
   // one edge for this ship: distance (window-scaled), fixed Δv and fixed seconds, or null if the ship can't use it
@@ -496,7 +508,7 @@
   }
   // Dijkstra over (node, fuel bucket), feasible at the slowest burn, cost = time at the chosen burn
   function search(c, s, t, burn) {
-    const D = DS[s.d], ve = veOf(c, D), dry = D.dry + loadMass(s.ld), cap = D.fuel, S = NN * (NB + 1);
+    const D = DS[s.d], ve = veOf(c, D), dry = shipDry(s) + loadMass(s.ld), cap = shipFuel(s), F = shipF(s), S = NN * (NB + 1);
     const dist = new Float64Array(S).fill(Infinity), fuel = new Float64Array(S), prev = new Int32Array(S).fill(-1), pe = new Int32Array(S).fill(-1);
     const done = new Uint8Array(S);
     const b0 = cap > 0 ? Math.min(NB, Math.floor(s.fu / cap * NB)) : 0, st0 = s.at * (NB + 1) + b0;
@@ -516,7 +528,7 @@
         const m0 = dry + fd;
         let need = li.fx, tt = li.ft;
         if (li.d > 0) {
-          const a = D.F / m0, vfl = Math.sqrt(a * li.d) / TUNE.vflDiv, v = vfl * K;
+          const a = F / m0, vfl = Math.sqrt(a * li.d) / TUNE.vflDiv, v = vfl * K;
           need += 2 * vfl; tt += li.d / v + v / a;
         }
         let fa = fd;
@@ -548,7 +560,7 @@
     legs.reverse();
     let from = s.at;
     for (const L of legs) { L.from = from; from = L.to; }
-    const D = DS[s.d], ve = veOf(c, D), dry = D.dry + loadMass(s.ld), cap = D.fuel;
+    const D = DS[s.d], ve = veOf(c, D), dry = shipDry(s) + loadMass(s.ld), cap = shipFuel(s), F = shipF(s);
     const paxCapped = D.f === 2 && !has(c, 'hig') && s.ld.some(j => JT[j.t].p);
     const want = Math.min(burn, paxCapped ? 0.75 : 1);
     let fuel = s.fu, fuelCr = 0, clock = 0, dvSum = 0, sMin = want, limited = false, space = 0;
@@ -559,7 +571,7 @@
       const segFuel = fuel;
       let j = i + 1;
       while (j < legs.length && !depotAt(c, legs[j].from)) j++;
-      const m0 = dry + fuel, a = D.F / m0, B = fuel > 0 ? ve * Math.log(m0 / dry) : 0;
+      const m0 = dry + fuel, a = F / m0, B = fuel > 0 ? ve * Math.log(m0 / dry) : 0;
       const info = [];
       let W = 0, sv = 0;
       for (let k = i; k < j; k++) {
@@ -609,6 +621,7 @@
     if (j.cb) p *= 1.25;
     if (j.v && D.vipB) p *= D.vipB;
     if (JT[j.t].p && D.paxB) p *= D.paxB;
+    if (JT[j.t].p && s.u) p *= 1 + 0.08 * s.u[3];
     if (j.v) {
       const due = j.da || ((t0 || at) + j.dl);
       if (at > due) p *= has(c, 'insure') ? TUNE.lateVipInsured : TUNE.lateVip;
@@ -651,7 +664,7 @@
     for (let k = s.ld.length - 1; k >= 0; k--) { const j = s.ld[k]; if (j.d === n) { s.ld.splice(k, 1); complete(c, s, j, n, t); } }
     f.i++;
     if (f.i * 5 < f.L.length) return;
-    s.f = null; s.fu = f.tow ? DS[s.d].fuel : s.fu;
+    s.f = null; s.fu = f.tow ? shipFuel(s) : s.fu;
     const p = c.P[n];
     if (p) for (let k = s.ld.length - 1; k >= 0; k--) { const j = s.ld[k]; j.h = 1; j.cb = 0; p.hd.push(j); s.ld.splice(k, 1); }
     dockOrHold(c, s, n);
@@ -793,7 +806,7 @@
   function sellShip(c, s) {
     if (s.f || s.ld.length || c.sh.length <= 1) return false;
     const D = DS[s.d];
-    c.cr += Math.round(D.cost * TUNE.sellBack);
+    c.cr += Math.round(D.cost * TUNE.sellBack + (s.sp || 0) * 0.5);
     if (has(c, 'salvage')) for (let k = 0; k < 3; k++) c.parts[D.f * 3 + k] += Math.ceil(D.rec[k] / 2);
     const at = s.at;
     c.sh.splice(c.sh.indexOf(s), 1);
@@ -1009,15 +1022,51 @@
   }
   function netWorth(c) {
     let v = c.cr;
-    for (const s of c.sh) v += DS[s.d].cost * TUNE.sellBack;
+    for (const s of c.sh) v += DS[s.d].cost * TUNE.sellBack + (s.sp || 0) * 0.5;
     for (let n = 0; n < NN; n++) if (c.P[n]) v += N[n].c * 0.5;
     for (let i = 0; i < 9; i++) v += c.parts[i] * partPrice(i) * 0.5;
     return Math.round(v);
   }
+  // ---- ship upgrades and livery (at a shipyard, or anywhere with Modular Hulls)
+  const canUpgradeHere = (c, s) => s.st === 0 && !s.f && !!c.P[s.at] && !!(c.P[s.at].yard || has(c, 'modular'));
+  function shipUpCost(c, s, k) {
+    const U = SHIP_UP[k], D = DS[s.d], lvl = s.u[k];
+    return { cr: Math.round(D.cost * U.k * (1 + lvl)), part: D.f * 3 + U.part, n: lvl >= 2 ? 2 : 1 };
+  }
+  function shipUpBlock(c, s, k) {
+    const U = SHIP_UP[k], D = DS[s.d];
+    if (s.u[k] >= U.max) return 'Maxed out';
+    if (k === 2 && D.fx) return 'Fixed layout: cannot extend';
+    if (k === 2 && D.climb) return 'Elevator cars cannot be extended';
+    if (k === 3 && !/[SC]/.test(s.cf)) return 'No passenger slots';
+    if (!canUpgradeHere(c, s)) return 'Dock at a shipyard (or research Modular Hulls)';
+    if (k === 2 && s.ld.length) return 'Unload first';
+    const q = shipUpCost(c, s, k);
+    if (c.parts[q.part] < q.n) return `Needs ${q.n} ${FAM[D.f]} ${PART[q.part % 3]} part${q.n > 1 ? 's' : ''}`;
+    if (c.cr < q.cr) return 'Not enough credits';
+    return '';
+  }
+  function upgradeShip(c, s, k) {
+    if (shipUpBlock(c, s, k)) return false;
+    const q = shipUpCost(c, s, k);
+    c.cr -= q.cr; c.parts[q.part] -= q.n; s.sp = (s.sp || 0) + q.cr;
+    s.u[k]++;
+    if (k === 0) s.fu = Math.min(shipFuel(s), s.fu + DS[s.d].fuel * 0.15);
+    if (k === 2) s.cf += 'K';
+    return true;
+  }
+  const liveryCost = s => Math.round(DS[s.d].cost * 0.02);
+  function setLivery(c, s, i) {
+    if (s.lv === i || !canUpgradeHere(c, s) || c.cr < liveryCost(s)) return false;
+    c.cr -= liveryCost(s); s.lv = i;
+    return true;
+  }
+
   function load(saved, now) {
     if (!saved || saved.v !== 1 || !Array.isArray(saved.P) || saved.P.length !== NN) return null;
     const c = saved;
     if (!c.st) c.st = zeroStats();
+    for (const s of c.sh) { if (!s.u) s.u = [0, 0, 0, 0]; if (s.lv === undefined) s.lv = s.i % LIVERY.length; if (!s.sp) s.sp = 0; }
     MX = null;
     return c;
   }
@@ -1028,25 +1077,16 @@
     shipCap, shipCount, techState, research, resSlots, grantCost, blueprintOk, canAssemble, assemble, buyShip, sellShip,
     partPrice, buyOffer, sellPart, upgCost, upgrade, devCost, commissionDev, projState, commissionProj, siteState, foundSite,
     buyService, collect, loadAndCheck, stationIncome, refitCost, canRefitHere, refit, routineCap, routineStep, autoLoad, gateState, netWorth,
-    nodeOn, edgeOn, has, addShip, wf, setEmit: f => { emit = f; } };
+    nodeOn, edgeOn, has, addShip, wf, SHIP_UP, LIVERY, shipDry, shipFuel, shipF, canUpgradeHere, shipUpCost, shipUpBlock, upgradeShip, liveryCost, setLivery, setEmit: f => { emit = f; } };
 
   // ---------------------------------------------------------------- ART (shared by thumb, art and the game)
+  // All art is drawn in code at startup: there are no image files. Planets are dithered pixel by pixel. Ships are
+  // assembled from modules (engine, tank, one module per slot, bow), so every design, refit, upgrade and livery gets
+  // its own sprite, in three sizes: 'map' (flying on the map), 'big' (closed hull) and 'cut' (cutaway interior).
   const PAL = { bg: '#070a17', bg2: '#0d1124', panel: '#111734', panel2: '#19214a', line: '#2a3363', amber: '#ffb547', cyan: '#5ce1e6',
     rose: '#ff5d8f', text: '#e9ecff', muted: '#8d95c4', dim: '#4a5288', good: '#7ee0a1', rust: '#d9643a', torch: '#c9b8ff' };
-  // ship silhouettes (facing right): w hull, g frame, c window, a accent, r engine bell
-  const SHAPES = {
-    capsule: ['....gg...', '..ggwwg..', 'rgwwwwcw.', '..ggwwg..', '....gg...'],
-    lifter: ['g........', 'gwwwwwwa.', 'rwwwwwwwa', 'gwwwwwwa.', 'g........'],
-    tug: ['.gg.gg...', 'gwwgwwwg.', 'rwwwwwwcw', 'gwwgwwwg.', '.gg.gg...'],
-    lander: ['..gwwg...', '.gwwwwg..', 'rwwccwwa.', '.g....g..', 'g......g.'],
-    torch: ['....ggg.....', 'g.gwwwwwgg..', 'rgwwwwwwwwcw', 'g.gwwwwwgg..', '....ggg.....'],
-    liner: ['...gggggg...', 'g.gwawawagg.', 'rgwwwwwwwwcw', 'g.gwawawagg.', '...gggggg...']
-  };
-  const DSHAPE = { kestrel: 'capsule', mule: 'lifter', sparrow: 'lifter', ferry: 'tug', heron: 'lander', gull: 'lifter', atlas: 'lifter',
-    climber: 'tug', drake: 'tug', barge: 'tug', kite: 'lander', lantern: 'capsule', pod: 'tug', wasp: 'torch', ox: 'liner',
-    iceboat: 'liner', pilgrim: 'liner', prospector: 'lander', packet: 'torch', yacht: 'torch' };
   const DACC = { kestrel: '#5ce1e6', mule: '#ffb547', sparrow: '#ff5d8f', ferry: '#7ee0a1', heron: '#ffb547', gull: '#5ce1e6', atlas: '#ff5d8f',
-    climber: '#8d95c4', drake: '#7ee0a1', barge: '#ffb547', kite: '#d9643a', lantern: '#c9b8ff', pod: '#8d95c4', wasp: '#ffb547',
+    climber: '#c9b8ff', drake: '#7ee0a1', barge: '#ffb547', kite: '#d9643a', lantern: '#c9b8ff', pod: '#5ce1e6', wasp: '#ffb547',
     ox: '#7ee0a1', iceboat: '#5ce1e6', pilgrim: '#ffb547', prospector: '#d9643a', packet: '#ff5d8f', yacht: '#c9b8ff' };
   function pixCanvas(rows, cols, flip) {
     const h = rows.length, w = rows[0].length, cv = document.createElement('canvas');
@@ -1059,6 +1099,13 @@
     }
     return cv;
   }
+  function mirror(cv) {
+    const m = document.createElement('canvas');
+    m.width = cv.width; m.height = cv.height;
+    const x = m.getContext('2d');
+    x.translate(cv.width, 0); x.scale(-1, 1); x.drawImage(cv, 0, 0);
+    return m;
+  }
   const hash = (x, y, s) => { const v = Math.sin(x * 127.1 + y * 311.7 + s * 74.7) * 43758.5453; return v - Math.floor(v); };
   function vnoise(x, y, s) {
     const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
@@ -1066,66 +1113,295 @@
     const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
     return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
   }
+  const fbm = (x, y, s) => vnoise(x, y, s) * 0.55 + vnoise(x * 2.1, y * 2.1, s + 1) * 0.3 + vnoise(x * 4.3, y * 4.3, s + 2) * 0.15;
   const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-  // planets in chunky dithered pixels: 1 art pixel = 2 world units
-  function bodyCanvas(kind, r) {
-    const R = Math.max(2, Math.round(r / 2)), ring = kind === 'saturn' ? 2.2 : 1, W = Math.ceil(R * 2 * ring) + 2, H = R * 2 + 2;
+  const RGB = {};
+  const rgb = h => RGB[h] || (RGB[h] = [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]);
+  const BT = {
+    ocean: ['#0a1f48', '#14397a', '#1e5aa8', '#3a82d0'], land: ['#16301c', '#2f6634', '#4f8f46', '#86b862'],
+    desert: ['#4a3622', '#8a6a40', '#c09a60', '#e2c48c'], ice: ['#6a7096', '#a9b0cc', '#d6dbec', '#ffffff'],
+    cloud: ['#4a5288', '#9aa2c8', '#d0d5ea', '#ffffff'], moon: ['#24283c', '#4c5068', '#8a8ea4', '#c8cbd8'],
+    mars: ['#36140e', '#74301e', '#b0502c', '#e07c46'], jupiter: ['#46301c', '#8a5a34', '#c49a68', '#efdcb4'],
+    storm: ['#561c12', '#963a24', '#c8573a', '#ec9070'], saturn: ['#463a22', '#8e7648', '#c8ac74', '#f0e0b4'],
+    neptune: ['#0c1c4c', '#1f4498', '#3a6cd0', '#82b0f4'], ceres: ['#26262e', '#4a4a56', '#7a7a88', '#aaaab6'],
+    rock: ['#2a221c', '#524536', '#806c56', '#ae977a'], ice2: ['#2a384a', '#6c8296', '#a9bdcd', '#e8f0f8'],
+    crack: ['#3a2a20', '#6a4a34', '#9a704e', '#c49a70']
+  };
+  // craters as [x, y, radius] in unit-disc coordinates, fixed per body kind
+  function craters(seed, n, rmax) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push([hash(i, 1, seed) * 1.8 - 0.9, hash(i, 2, seed) * 1.8 - 0.9, 0.04 + hash(i, 3, seed) * rmax]);
+    return out;
+  }
+  const CRATERS = { moon: craters(3, 22, 0.16), mars: craters(5, 9, 0.1), ceres: craters(7, 10, 0.18), rock: craters(9, 6, 0.22) };
+  // planets: 1 art pixel = px world units (1 in the game, 2 for chunky thumbnails)
+  function bodyCanvas(kind, r, px = 1) {
+    const R = Math.max(3, Math.round(r / px)), ring = kind === 'saturn' ? 2.3 : 1, rim = kind === 'earth' ? 3 : 0;
+    const W = Math.ceil(R * 2 * ring) + 2 + rim * 2, H = R * 2 + 2 + rim * 2;
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-    const x = cv.getContext('2d'), img = x.createImageData(W, H), d = img.data;
+    const x = cv.getContext('2d'), img = x.createImageData(W, H), dd = img.data;
     const cx = W / 2, cy = H / 2;
-    const put = (px, py, hex) => { const i = (py * W + px) * 4; d[i] = parseInt(hex.slice(1, 3), 16); d[i + 1] = parseInt(hex.slice(3, 5), 16); d[i + 2] = parseInt(hex.slice(5, 7), 16); d[i + 3] = 255; };
-    const tones = {
-      earth: ['#0d2a5c', '#1e4f9c', '#2f74c8'], moon: ['#3a3f58', '#7b8098', '#b8bccc'], mars: ['#4a1d14', '#a3452a', '#d9743f'],
-      jupiter: ['#5a3a22', '#b98a5a', '#ead2a8'], saturn: ['#5a4a2a', '#c2a46a', '#eedcac'], neptune: ['#132a6a', '#2f5fc0', '#6aa0ee'],
-      ceres: ['#34343e', '#6e6e7c', '#a4a4b0'], rock: ['#3a3029', '#7a6a58', '#a8957c'], ice: ['#3a4a5e', '#9fb4c8', '#e2ecf4']
-    }[kind];
-    for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
-      const dx = (px + 0.5 - cx) / R, dy = (py + 0.5 - cy) / R, rr = dx * dx + dy * dy;
-      const th = BAYER[(py & 3) * 4 + (px & 3)] / 16;
-      if (kind === 'saturn' && rr > 1) {
-        const ry = dy / 0.32, q = dx * dx + ry * ry;
-        if (q > 1.6 && q < 4.4 && !(dy < 0 && rr < 1.3)) put(px, py, q < 2.6 ? '#a08a5a' : q < 3.4 ? '#cdb888' : '#7a6a48');
+    const put = (qx, qy, hx) => { const i = (qy * W + qx) * 4, c = rgb(hx); dd[i] = c[0]; dd[i + 1] = c[1]; dd[i + 2] = c[2]; dd[i + 3] = 255; };
+    const tone = (T, v, th) => T[Math.max(0, Math.min(3, Math.floor(v * 4 + th - 0.5)))];
+    const cr = CRATERS[kind === 'ice' ? 'rock' : kind] || null;
+    for (let qy = 0; qy < H; qy++) for (let qx = 0; qx < W; qx++) {
+      const dx = (qx + 0.5 - cx) / R, dy = (qy + 0.5 - cy) / R, rr = dx * dx + dy * dy;
+      const th = BAYER[(qy & 3) * 4 + (qx & 3)] / 16;
+      if (kind === 'saturn') {
+        const ry = dy / 0.3, q = dx * dx + ry * ry;
+        const band = q > 1.55 && q < 4.6 && !(q > 2.45 && q < 2.62) && !(q > 3.7 && q < 3.82);
+        if (band && (rr > 1 || dy > 0)) {
+          const shade = rr > 1 && dx > 0.15 && dy < 0.25 && Math.abs(dy) < 0.5 ? 0.25 : 0;
+          put(qx, qy, tone(BT.saturn, (q < 2.45 ? 0.45 : q < 3.7 ? 0.8 : 0.55) - shade, th));
+          continue;
+        }
+      }
+      if (rr > 1) {
+        if (rim && rr < (1 + rim / R) * (1 + rim / R)) {
+          const l = -0.6 * dx - 0.45 * dy;
+          if (l > -0.1) put(qx, qy, l > 0.35 ? '#8fd8ff' : l > 0.1 ? '#4a9ae8' : '#24509a');
+        }
         continue;
       }
-      if (rr > 1) continue;
       const nz = Math.sqrt(1 - rr);
-      let light = Math.max(0, -0.55 * dx - 0.45 * dy + 0.7 * nz) * 1.15;
-      let t = light;
-      let col;
+      const light = Math.max(0, Math.min(1, (-0.6 * dx - 0.45 * dy + 0.66 * nz) * 1.1));
+      let v = light, T = BT[kind] || BT.rock;
       if (kind === 'earth') {
-        const n = vnoise(dx * 3 + 4, dy * 3 + 1, 3) * 0.7 + vnoise(dx * 7, dy * 7, 5) * 0.3;
-        const cl = vnoise(dx * 5 + 9, dy * 9, 8);
-        if (cl > 0.72) col = light + 0.1 > th ? '#e9ecff' : '#8d95c4';
-        else if (n > 0.55) col = light > th + 0.15 ? '#5fa35a' : light > th - 0.25 ? '#3f7a44' : '#1d3a26';
-        else col = t > th + 0.2 ? tones[2] : t > th - 0.3 ? tones[1] : tones[0];
-      } else if (kind === 'jupiter' || kind === 'saturn') {
-        const band = Math.sin(dy * (kind === 'jupiter' ? 14 : 10) + vnoise(dx * 4, dy * 2, 2) * 1.5);
-        t = light + band * 0.18;
-        col = t > th + 0.25 ? tones[2] : t > th - 0.25 ? tones[1] : tones[0];
-        if (kind === 'jupiter' && Math.hypot(dx - 0.35, (dy - 0.32) * 1.8) < 0.16 && light > 0.2) col = '#c4553a';
+        const n = fbm(dx * 2.4 + 3, dy * 2.4 + 1, 3), cl = fbm(dx * 3 + 7 + dy * 1.5, dy * 8 + 2, 8);
+        if (Math.abs(dy) > 0.84 + n * 0.1) T = BT.ice;
+        else if (cl > 0.62) { T = BT.cloud; v += 0.1; }
+        else if (n > 0.52) T = n > 0.66 && Math.abs(dy) < 0.45 ? BT.desert : BT.land;
+        else { T = BT.ocean; v *= 0.95; }
+        if (light < 0.02 && T === BT.land && hash(qx, qy, 4) > 0.98) { put(qx, qy, '#ffb547'); continue; }
+      } else if (kind === 'jupiter' || kind === 'saturn' || kind === 'neptune') {
+        const f = kind === 'jupiter' ? 16 : kind === 'saturn' ? 10 : 7, amp = kind === 'neptune' ? 0.08 : 0.17;
+        v = v * 0.78 + Math.sin(dy * f + fbm(dx * 3, dy * 6, 2) * 2.4) * amp + 0.1;
+        if (kind === 'jupiter') {
+          const ex = (dx - 0.32) / 0.2, ey = (dy - 0.36) / 0.1, e = ex * ex + ey * ey;
+          if (e < 1) { T = BT.storm; v = light * (e < 0.5 ? 1 : 0.8); } else if (e < 1.5) v = light + 0.2;
+        }
+        if (kind === 'neptune') { const ex = (dx + 0.25) / 0.16, ey = (dy - 0.15) / 0.08; if (ex * ex + ey * ey < 1) v *= 0.45; }
       } else {
-        const n = vnoise(dx * 4 + 2, dy * 4, kind.length) * 0.35;
-        t = light + n - 0.15;
-        col = t > th + 0.2 ? tones[2] : t > th - 0.3 ? tones[1] : tones[0];
-        if (kind === 'mars' && dy < -0.82) col = '#e9ecff';
+        v *= 0.82 + fbm(dx * 3 + 2, dy * 3, kind.length) * 0.36;
+        if (kind === 'moon' && fbm(dx * 1.6 + 5, dy * 1.6 + 2, 11) < 0.42) v *= 0.72;
+        if (kind === 'mars') {
+          if (dy < -0.8 + fbm(dx * 4, 0, 6) * 0.08) T = BT.ice;
+          else if (Math.abs(dy - 0.08 - Math.sin(dx * 3) * 0.08) < 0.035 && dx > -0.55 && dx < 0.45) v *= 0.55;
+        }
+        if (kind === 'ice' && Math.abs(Math.sin(dx * 11 + dy * 5 + fbm(dx * 3, dy * 3, 4) * 3)) < 0.09) T = BT.crack;
+        if (cr) for (let i = 0; i < cr.length; i++) {
+          const k = cr[i], ex = dx - k[0], ey = dy - k[1], d2 = ex * ex + ey * ey;
+          if (d2 < k[2] * k[2]) { const d = Math.sqrt(d2) / k[2]; v += d > 0.72 ? (ex * -0.6 + ey * -0.45 > 0 ? -0.15 : 0.18) : -0.12; break; }
+        }
       }
-      put(px, py, col);
+      put(qx, qy, tone(T, v, th));
     }
     x.putImageData(img, 0, 0);
-    return { cv, w: W * 2, h: H * 2 };
+    return { cv, w: W * px, h: H * px };
   }
-  function drawShipArt(ctx, x, y, s, plume) {
-    // simple vector torch ship for Steam art and the menu thumbnail
-    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
-    if (plume) {
-      for (let i = 0; i < 14; i++) { ctx.fillStyle = i < 3 ? '#ffffff' : i < 7 ? '#c9b8ff' : 'rgba(201,184,255,' + (0.5 - i * 0.03) + ')'; ctx.fillRect(-14 - i * 4, -1.5 + (i > 6 ? 0.5 : 0), 4, 3 - (i > 6 ? 1 : 0)); }
+
+  // ---- ships: modular pixel sprites
+  const DSTYLE = {
+    kestrel: { bow: 'capsule', hc: 0, eng: 1 }, mule: { bow: 'fairing', hc: 0, eng: 2 }, sparrow: { bow: 'fairing', hc: 0, eng: 1, fins: 1 },
+    ferry: { bow: 'tug', hc: 0, eng: 2 }, heron: { bow: 'cockpit', hc: 0, eng: 1, legs: 1 }, gull: { bow: 'fairing', hc: 1, eng: 3, fins: 1 },
+    atlas: { bow: 'fairing', hc: 2, eng: 3, fins: 1 }, climber: { bow: 'car', hc: 1, eng: 0 }, drake: { bow: 'cockpit', hc: 1, eng: 1 },
+    barge: { bow: 'tug', hc: 2, eng: 1 }, kite: { bow: 'capsule', hc: 1, eng: 2, legs: 1 }, lantern: { bow: 'sleek', hc: 0, eng: 2 },
+    pod: { bow: 'pod', hc: 0, eng: 1 }, wasp: { bow: 'sleek', hc: 0, eng: 1 }, ox: { bow: 'armor', hc: 2, eng: 1, dish: 1 },
+    iceboat: { bow: 'tug', hc: 2, eng: 1, legs: 1 }, pilgrim: { bow: 'liner', hc: 2, eng: 1, dish: 1 }, prospector: { bow: 'cockpit', hc: 1, eng: 1, legs: 1 },
+    packet: { bow: 'sleek', hc: 1, eng: 1 }, yacht: { bow: 'yacht', hc: 1, eng: 1 }
+  };
+  const ST = { // 5-tone ramps: highlight, base, mid, shade, outline
+    hull: ['#f6f8ff', '#d4d8ee', '#a9aecb', '#787e9e', '#3c4160'], metal: ['#b8bed8', '#8a90b0', '#646a8a', '#454a68', '#262a40'],
+    dark: ['#6a7096', '#4a5074', '#343956', '#23273e', '#14172a'], foam: ['#ffd7a0', '#f0b06a', '#c8843e', '#94582a', '#4a2a14'],
+    silver: ['#ffffff', '#e2e6f4', '#b4bbd6', '#7c84a8', '#3c4160'], torch: ['#a69ad6', '#7a6ea6', '#55497c', '#3a3358', '#1c1830'],
+    gold: ['#fff0b0', '#ffcf6a', '#d8a040', '#a07020', '#503810']
+  };
+  function shade(hx, k) { const c = rgb(hx); return '#' + c.map(q => Math.max(0, Math.min(255, Math.round(q * k))).toString(16).padStart(2, '0')).join(''); }
+  // design D, slot layout cfg, livery colour, tank upgrade level, mode 'map' | 'big' | 'cut'
+  function shipCanvas(D, cfg, liv, tank, mode) {
+    const big = mode !== 'map', st = DSTYLE[D.k], n = cfg.length;
+    const HH = big ? [16, 20, 26][st.hc] : [7, 9, 11][st.hc];
+    const MW = big ? 14 : n > 6 ? 3 : 4;
+    const ff = D.fuel / (D.fuel + D.dry);
+    const EW = st.eng === 0 ? (big ? 6 : 2) : D.f === 0 ? (big ? 10 : 4) : D.f === 1 ? (big ? 18 : 6) : (big ? 24 : 7);
+    const TW = D.fuel ? Math.round((big ? 6 + 18 * ff : 2 + 4 * ff) * (1 + 0.15 * tank)) : 0;
+    const BW = big ? (/sleek|yacht/.test(st.bow) ? 20 : st.bow === 'armor' ? 16 : 12) : (/sleek|yacht/.test(st.bow) ? 6 : 4);
+    const wingK = D.f === 2 ? (big ? 0.6 : 0.75) : D.f === 1 ? 0.5 : st.fins ? 0.25 : 0.12;
+    const top = Math.ceil(HH * wingK) + (st.dish && big ? 5 : 0) + 1;
+    const bot = Math.ceil(HH * wingK) + (st.legs ? Math.ceil(HH * 0.5) : 0) + 1;
+    const Wd = EW + TW + n * MW + BW + 1, Ht = top + HH + bot;
+    const cv = document.createElement('canvas'); cv.width = Wd; cv.height = Ht;
+    const g = cv.getContext('2d');
+    const R = (x, y, w, h, c) => { g.fillStyle = c; g.fillRect(x, y, w, h); };
+    const y0 = top, y1 = top + HH, cy = top + HH / 2;
+    // a vertical slice of a cylinder, h rows tall centred on cy
+    const col = (x, h, T, w = 1) => {
+      h = Math.max(1, Math.round(h));
+      const ys = Math.round(cy - h / 2);
+      for (let r = 0; r < h; r++) {
+        const t = h === 1 ? 0.5 : r / (h - 1);
+        R(x, ys + r, w, 1, T[r === 0 || r === h - 1 ? 4 : t < 0.18 ? 1 : t < 0.36 ? 0 : t < 0.64 ? 1 : t < 0.84 ? 2 : 3]);
+      }
+    };
+    const accent = liv, accentD = shade(liv, 0.6);
+    let x = 0;
+    // ---- engine section
+    if (st.eng === 0) { // elevator clamp and tether
+      R(Math.floor(EW / 2), 0, 1, Ht, '#8d95c4');
+      for (let i = 0; i < EW; i++) col(i, HH * 0.8, ST.metal);
+    } else if (D.f === 0) {
+      const nb = st.eng, bh = HH * (nb === 1 ? 0.9 : nb === 2 ? 0.5 : 0.36), bw = big ? 7 : 3;
+      for (let b = 0; b < nb; b++) {
+        const off = (b - (nb - 1) / 2) * bh * 1.05;
+        for (let i = 0; i < bw; i++) {
+          const h = Math.max(1, Math.round(bh * (1 - 0.5 * i / bw))), ys = Math.round(cy + off - h / 2);
+          for (let r = 0; r < h; r++) R(i, ys + r, 1, 1, ST.metal[r === 0 || r === h - 1 ? 4 : r < h / 3 ? 0 : r < h * 0.7 ? 1 : 2]);
+          if (i === 0 && big && h > 3) { R(0, ys + 1, 1, h - 2, '#1a1420'); R(0, Math.round(cy + off) - 1, 1, 2, '#ff8a3a'); }
+        }
+      }
+      for (let i = bw; i < EW; i++) col(i, HH * 0.75, ST.dark);
+    } else if (D.f === 1) {
+      const fins = big ? 8 : 3, shield = big ? 2 : 1;
+      for (let i = 0; i < (big ? 4 : 1); i++) col(i, HH * (0.35 + 0.1 * i), ST.metal);
+      for (let i = big ? 4 : 1; i < EW - fins - shield; i++) col(i, HH * 0.6, ST.dark);
+      if (big) { R(6, Math.round(cy - HH * 0.3) + 1, 2, Math.round(HH * 0.6) - 2, PAL.amber); R(9, Math.round(cy - HH * 0.3) + 1, 1, Math.round(HH * 0.6) - 2, PAL.amber); }
+      for (let i = EW - fins - shield; i < EW - fins; i++) col(i, HH * 1.25, ST.metal);
+      // radiator fins above and below
+      const fx0 = EW - fins, fh = Math.round(HH * 0.5);
+      R(fx0, y0 - fh, fins + TW, fh, '#2b3a6a'); R(fx0, y1, fins + TW, fh, '#2b3a6a');
+      for (let i = fx0; i < fx0 + fins + TW; i += big ? 3 : 2) { R(i, y0 - fh, 1, fh, '#4a5ea0'); R(i, y1, 1, fh, '#4a5ea0'); }
+      R(fx0, y0 - fh, fins + TW, 1, '#7a8ed0'); R(fx0, y1 + fh - 1, fins + TW, 1, '#1a2448');
+      for (let i = fx0; i < EW; i++) col(i, HH * 0.55, ST.dark);
+    } else {
+      const ringW = big ? 2 : 1;
+      for (let i = 0; i < ringW; i++) col(i, HH * 1.1, ['#ffffff', '#c9b8ff', '#9a86e0', '#6a5aa8', '#2a2048']);
+      for (let i = ringW; i < EW; i++) col(i, HH * (1 - 0.45 * (i / EW)), ST.torch);
+      for (let i = ringW + 3; i < EW; i += big ? 5 : 3) col(i, HH * (1 - 0.45 * (i / EW)), ['#8a7ec0', '#5e5288', '#43386a', '#2d2748', '#1c1830']);
+      // radiator wings, tapering toward the bow
+      const wx0 = Math.round(EW * 0.5), wl = EW - wx0 + TW, wh = Math.round(HH * (wingK - 0.03));
+      for (let i = 0; i < wl; i++) {
+        const h = Math.max(1, Math.round(wh * (1 - 0.6 * i / wl)));
+        R(wx0 + i, y0 - h, 1, h, (i % (big ? 4 : 2)) ? '#2b3050' : '#3f4670'); R(wx0 + i, y1, 1, h, (i % (big ? 4 : 2)) ? '#2b3050' : '#3f4670');
+        R(wx0 + i, y0 - h, 1, 1, '#ff8a3a'); R(wx0 + i, y1 + h - 1, 1, 1, '#ff8a3a');
+      }
     }
-    ctx.fillStyle = '#6a729c'; ctx.fillRect(-12, -5, 3, 10); ctx.fillRect(4, -6, 6, 12);
-    ctx.fillStyle = '#c8cde8'; ctx.fillRect(-10, -3, 24, 6); ctx.fillRect(-4, -5, 12, 10);
-    ctx.fillStyle = '#5ce1e6'; ctx.fillRect(12, -1, 3, 2);
-    ctx.fillStyle = '#ffb547'; ctx.fillRect(-2, -4, 2, 8); ctx.fillRect(3, -4, 2, 8);
-    ctx.fillStyle = '#ff5d8f'; ctx.fillRect(-14, -2, 2, 4);
-    ctx.restore();
+    x = EW;
+    // ---- propellant tank
+    const tankT = D.f === 0 ? ST.foam : D.f === 1 ? ST.silver : ST.dark;
+    for (let i = 0; i < TW; i++) col(x + i, HH * 0.92, (big && i % 6 === 5) ? tankT.slice(1).concat(tankT[4]) : tankT);
+    if (big && TW > 8) { R(x + Math.floor(TW / 2) - 1, Math.round(cy) - 1, 3, 2, accent); }
+    x += TW;
+    // ---- payload modules, one per slot
+    const slots = [];
+    const wall = big ? 3 : 1;
+    const iy0 = y0 + wall + (big ? 1 : 0), iy1 = y1 - wall;
+    for (let s = 0; s < n; s++) {
+      const mx = x + s * MW, ch = cfg[s];
+      for (let i = 0; i < MW; i++) col(mx + i, HH, ST.hull);
+      R(mx, y0 + 1, 1, HH - 2, ST.hull[3]); // seam
+      R(mx, y0 + (big ? 3 : 1), MW, big ? 2 : 1, accent);
+      if (big) R(mx, y0 + 5, MW, 1, accentD);
+      if (mode === 'cut') {
+        R(mx + 1, iy0, MW - 1, iy1 - iy0, '#141936');
+        R(mx + 1, iy0, MW - 1, Math.floor((iy1 - iy0) / 2), '#1a2048');
+        R(mx + 1, iy1 - 1, MW - 1, 1, '#2a3363');
+        if (ch === 'K') { R(mx + 1, iy0, 1, iy1 - iy0, '#2a3363'); R(mx + MW - 1, iy0, 1, iy1 - iy0, '#2a3363'); }
+        else if (ch === 'S') { R(mx + MW - 4, iy1 - 7, 2, 6, '#3a4270'); R(mx + 3, iy1 - 3, MW - 6, 2, '#4a5490'); }
+        else { R(mx + 2, iy0 + 1, MW - 4, 2, '#5ce1e6'); R(mx + 2, iy1 - 3, MW - 4, 2, '#a07a2a'); R(mx + MW - 4, iy1 - 7, 2, 5, '#a07a2a'); }
+      } else if (ch === 'S') {
+        if (big) for (let k = 2; k < MW - 2; k += 4) { R(mx + k, Math.round(cy) - 2, 3, 3, '#1a2a4a'); R(mx + k, Math.round(cy) - 2, 2, 2, PAL.cyan); }
+        else R(mx + 1, Math.round(cy) - 1, Math.max(1, MW - 2), 1, PAL.cyan);
+      } else if (ch === 'C') {
+        if (big) { R(mx + 2, Math.round(cy) - 3, MW - 4, 5, ST.gold[2]); R(mx + 3, Math.round(cy) - 2, MW - 6, 3, '#bff6f8'); }
+        else { R(mx + 1, Math.round(cy) - 1, Math.max(1, MW - 2), 1, ST.gold[1]); }
+      } else if (big) {
+        R(mx + 2, y0 + 7, MW - 4, HH - 10, ST.hull[2]);
+        for (let k = mx + 3; k < mx + MW - 2; k += 3) R(k, y0 + 7, 1, HH - 10, ST.hull[3]);
+        R(mx + 2, y0 + 7, MW - 4, 1, ST.hull[4]);
+      } else R(mx + 1, Math.round(cy), Math.max(1, MW - 2), 1, ST.hull[3]);
+      slots.push({ x: mx, w: MW, ch });
+    }
+    if (big && st.dish) { const dx = x + Math.floor(n * MW / 2); R(dx, y0 - 3, 1, 3, ST.metal[2]); R(dx - 3, y0 - 5, 7, 2, ST.metal[1]); R(dx - 2, y0 - 6, 5, 1, ST.metal[0]); }
+    x += n * MW;
+    // ---- bow
+    for (let i = 0; i < BW; i++) {
+      const t = i / BW;
+      let h = HH, T = ST.hull;
+      switch (st.bow) {
+        case 'capsule': h = HH * (1 - 0.6 * t); break;
+        case 'fairing': h = HH * Math.sqrt(Math.max(0.04, 1 - t * t)); if (t > 0.7) T = [shade(liv, 1.3), liv, liv, accentD, ST.hull[4]]; break;
+        case 'cockpit': h = HH * Math.sqrt(Math.max(0.1, 1 - Math.pow(t, 3))); break;
+        case 'tug': case 'car': case 'pod': h = HH * (t > 0.7 ? 0.8 : 0.95); T = st.bow === 'tug' && t > 0.7 ? ST.metal : ST.hull; break;
+        case 'sleek': case 'yacht': h = Math.max(2, HH * Math.pow(1 - t, 1.2)); break;
+        case 'armor': h = HH * (1 - 0.5 * t); T = ST.dark; break;
+        case 'liner': h = HH * Math.sqrt(Math.max(0.15, 1 - t * t * t)); break;
+      }
+      col(x + i, h, T);
+      if (big && (st.bow === 'sleek' || st.bow === 'yacht') && h > 4) R(x + i, Math.round(cy - h / 2) + 2, 1, 1, st.bow === 'yacht' ? ST.gold[1] : accent);
+    }
+    if (big) {
+      if (st.bow === 'cockpit' || st.bow === 'liner' || st.bow === 'yacht') { R(x + BW - 6, Math.round(cy) - 3, 3, 2, '#1a2a4a'); R(x + BW - 6, Math.round(cy) - 3, 2, 1, '#bff6f8'); }
+      if (st.bow === 'capsule') R(x + 2, Math.round(cy) - 2, 2, 2, PAL.cyan);
+      if (st.bow === 'armor') for (let i = 2; i < BW - 4; i += 4) R(x + i, Math.round(cy) - 1, 2, 2, PAL.amber);
+      if (st.bow === 'tug') R(x + BW - 1, Math.round(cy) - 1, 1, 2, PAL.rose);
+    }
+    // ---- landing legs and grid fins
+    if (st.legs) {
+      const lh = Math.ceil(HH * 0.45);
+      for (const lx of [EW + 1, x - 2]) {
+        for (let k = 0; k < lh; k++) R(lx + (lx > EW + 1 ? k / 2 : -k / 2), y1 + k, 1, 1, ST.metal[2]);
+        R(lx + (lx > EW + 1 ? lh / 2 : -lh / 2) - 1, y1 + lh, 3, 1, ST.metal[1]);
+      }
+    }
+    if (st.fins) {
+      const fh = Math.ceil(HH * 0.22), fw = big ? 4 : 2;
+      R(EW + 1, y0 - fh, fw, fh, ST.metal[2]); R(EW + 1, y1, fw, fh, ST.metal[2]);
+    }
+    return { cv, slots, iy0, iy1, cy, w: Wd, h: Ht, HH };
+  }
+  // passengers and crates for the cutaway (art pixels; drawn scaled on top of a 'cut' sprite)
+  const SKIN = ['#f1c27d', '#c68642', '#8d5524', '#e0ac69'], SUIT = ['#5ce1e6', '#ff5d8f', '#7ee0a1', '#e9ecff'];
+  function paxCanvas(i, vip) {
+    return pixCanvas(['..hh..', '..hh..', '.SSSS.', 'SSSSSS', '.SSSS.', '.SSLLL', '....LL'],
+      { h: SKIN[i % 4], S: vip ? '#ffcf6a' : SUIT[(i >> 2) % 4], L: '#2a3363' });
+  }
+  const CRATE_COL = { 6: '#b4bbd6', 7: '#f0b06a', 8: '#ffb547', 9: '#7ee0a1', 10: '#ff5d8f', 11: '#5ce1e6', 12: '#c9b8ff', 13: '#a8957c',
+    14: '#bff6f8', 15: '#9a6a44', 16: '#e8886a', 17: '#9fb4c8', 18: '#ffcf6a' };
+  function crateCanvas(colr) {
+    const w = 10, h = 8, d = shade(colr, 0.62), l = shade(colr, 1.25);
+    const rows = [];
+    for (let r = 0; r < h; r++) {
+      let s = '';
+      for (let q = 0; q < w; q++) s += r === 0 || q === 0 ? 'l' : r === h - 1 || q === w - 1 ? 'd' : r === 3 ? 'd' : (q === 2 || q === w - 3) ? 'd' : 'b';
+      rows.push(s);
+    }
+    return pixCanvas(rows, { b: colr, d, l });
+  }
+  // engine plume per drive family, art pixels; mode 'map' is short, 'big' long
+  function plumeCanvas(fam, big) {
+    const len = big ? [18, 26, 56][fam] : [7, 10, 22][fam], h = big ? [7, 7, 6][fam] : 3;
+    const cols = [['#ffffff', '#ffe08a', '#ffb547', '#ff5d8f'], ['#ffffff', '#bff6f8', '#5ce1e6', '#2f74c8'], ['#ffffff', '#e4dcff', '#c9b8ff', '#6a5aa8']][fam];
+    const cv = document.createElement('canvas'); cv.width = len; cv.height = h;
+    const g = cv.getContext('2d');
+    for (let q = 0; q < len; q++) {
+      const t = q / len, half = (h / 2) * (fam === 2 ? 1 - t * 0.5 : 1 - t * 0.8);
+      for (let r = 0; r < h; r++) {
+        const dy = Math.abs(r + 0.5 - h / 2) / Math.max(0.5, half);
+        if (dy > 1) continue;
+        const v = (1 - t) * (1 - dy * 0.7);
+        if (v < 0.25 && BAYER[(r & 3) * 4 + (q & 3)] / 16 > v * 3) continue;
+        g.fillStyle = cols[v > 0.75 ? 0 : v > 0.5 ? 1 : v > 0.3 ? 2 : 3];
+        g.fillRect(len - 1 - q, r, 1, 1);
+      }
+    }
+    return cv;
+  }
+  // a finished ship with its plume, for the menu thumbnail and Steam art
+  function shipArtAt(ctx, k, x, y, sc, mode = 'big') {
+    const Dz = DS.find(q => q.k === k), e = shipCanvas(Dz, Dz.cfg, DACC[k], 0, mode), p = plumeCanvas(Dz.f, mode !== 'map');
+    const w = e.w * sc, h = e.h * sc, X = Math.round(x - w / 2), Y = Math.round(y - h / 2);
+    ctx.drawImage(p, X - p.width * sc, Math.round(Y + e.cy * sc - p.height * sc / 2), p.width * sc, p.height * sc);
+    ctx.drawImage(e.cv, X, Y, w, h);
   }
 
   Arcade.register({
@@ -1142,14 +1418,14 @@
     thumb(ctx, w, h) {
       ctx.fillStyle = PAL.bg; ctx.fillRect(0, 0, w, h);
       for (let i = 0; i < 40; i++) { ctx.fillStyle = i % 3 ? '#2a3363' : '#8d95c4'; ctx.fillRect((i * 37) % w, (i * 53) % h, 1, 1); }
-      const e = bodyCanvas('earth', 70), m = bodyCanvas('moon', 14);
+      const e = bodyCanvas('earth', 70, 2), m = bodyCanvas('moon', 14, 2);
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(e.cv, -46, 34, e.w * 0.9, e.h * 0.9);
       ctx.drawImage(m.cv, 84, 16, m.w * 0.8, m.h * 0.8);
       ctx.strokeStyle = '#2a3363'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
       ctx.beginPath(); ctx.moveTo(52, 60); ctx.lineTo(92, 26); ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = PAL.amber; ctx.fillRect(50, 58, 4, 4); ctx.fillRect(90, 24, 4, 4);
-      drawShipArt(ctx, 70, 42, 1.3, true);
+      shipArtAt(ctx, 'wasp', 72, 40, 2, 'map');
     },
 
     art(ctx, W, H, kind) {
@@ -1164,15 +1440,15 @@
         ctx.drawImage(m.cv, W * 0.66, H * 0.5, m.w * k, m.h * k);
         ctx.drawImage(j.cv, W * 0.55, H * 0.06, j.w * k * 0.7, j.h * k * 0.7);
         ctx.drawImage(ma.cv, W * 0.08, H * 0.3, ma.w * k * 0.5, ma.h * k * 0.5);
-        drawShipArt(ctx, W * 0.52, H * 0.53, 5 * u, true);
+        shipArtAt(ctx, 'wasp', W * 0.58, H * 0.53, Math.round(2.4 * u));
       } else {
         ctx.drawImage(e.cv, -e.w * k * 0.45, H / 2 - e.h * k / 2, e.w * k, e.h * k);
-        ctx.drawImage(m.cv, W * 0.3, H * 0.62, m.w * k, m.h * k);
+        ctx.drawImage(m.cv, W * 0.6, H * 0.6, m.w * k, m.h * k);
         ctx.drawImage(ma.cv, W * 0.52, H * 0.18, ma.w * k * 0.6, ma.h * k * 0.6);
         ctx.drawImage(j.cv, W - j.w * k * 0.75, H / 2 - j.h * k / 2, j.w * k, j.h * k);
         ctx.strokeStyle = 'rgba(92,225,230,.35)'; ctx.lineWidth = 2 * u; ctx.setLineDash([6 * u, 6 * u]);
         ctx.beginPath(); ctx.moveTo(W * 0.18, H * 0.5); ctx.lineTo(W * 0.56, H * 0.3); ctx.lineTo(W * 0.82, H * 0.5); ctx.stroke(); ctx.setLineDash([]);
-        drawShipArt(ctx, W * 0.42, H * 0.38, 5 * u, true);
+        shipArtAt(ctx, 'ox', W * 0.4, H * 0.7, Math.max(2, Math.round(2 * u)));
       }
     },
 
@@ -1247,19 +1523,15 @@
       }
 
       // ---- sprites (rebuilt on resize so they stay crisp)
-      const SPR = { ship: {}, shipL: {}, plume: [], node: {}, body: {} };
+      const SPR = { node: {}, body: {} };
       function buildSprites() {
-        for (const Dz of DS) {
-          const cols = { w: '#c8cde8', g: '#6a729c', c: C.cyan, a: DACC[Dz.k], r: C.rose };
-          SPR.ship[Dz.k] = pixCanvas(SHAPES[DSHAPE[Dz.k]], cols, false);
-          SPR.shipL[Dz.k] = pixCanvas(SHAPES[DSHAPE[Dz.k]], cols, true);
-        }
-        const pl = [['ya', '#ffffff', '#ffb547', '#ff5d8f'], ['yc', '#ffffff', '#5ce1e6', '#2f74c8'], ['yt', '#ffffff', '#c9b8ff', '#6a5aa8']];
-        SPR.plume = pl.map((p, i) => {
-          const len = [4, 6, 12][i], rows = ['', '', ''];
-          for (let q = 0; q < len; q++) { rows[0] += q > len * 0.4 ? '.' : 'c'; rows[1] += q < 1 ? 'a' : q < len * 0.5 ? 'b' : 'c'; rows[2] += q > len * 0.4 ? '.' : 'c'; }
-          return { r: pixCanvas(rows.map(r => r.split('').reverse().join('')), { a: p[1], b: p[2], c: p[3] }, false), l: pixCanvas(rows.map(r => r.split('').reverse().join('')), { a: p[1], b: p[2], c: p[3] }, true) };
-        });
+        SPR.plumeMap = [0, 1, 2].map(f => { const r = plumeCanvas(f, false); return { r, l: mirror(r) }; });
+        SPR.plumeBig = [0, 1, 2].map(f => plumeCanvas(f, true));
+        SPR.pax = [];
+        for (let i = 0; i < 16; i++) SPR.pax.push(paxCanvas(i, false));
+        for (let i = 0; i < 4; i++) SPR.pax.push(paxCanvas(i, true));
+        SPR.crate = JT.map((t, i) => crateCanvas(CRATE_COL[i] || (i === J_RES ? '#c9b8ff' : i >= J_KIT ? '#7ee0a1' : '#8d95c4')));
+        SPR.dmap = DS.map(Dz => shipCanvas(Dz, Dz.cfg, DACC[Dz.k], 0, 'map'));
         const ICON = {
           pad: ['...a...', '..aaa..', '..a.a..', '.aa.aa.', '.a...a.', 'aaaaaaa', 'a.....a'],
           orb: ['..aaa..', '.a...a.', 'a..a..a', 'a.aaa.a', 'a..a..a', '.a...a.', '..aaa..'],
@@ -1275,6 +1547,34 @@
         }
         SPR.star = pixCanvas(['..a..', '.aaa.', 'aaaaa', '.a.a.'], { a: '#ffffff' });
         for (const b of BODIES) if (!SPR.body[b.k + b.r]) SPR.body[b.k + b.r] = bodyCanvas(b.k, b.r);
+      }
+      // per-ship sprite cache: rebuilt only when the layout, livery or tanks change
+      const SHIPC = new Map(), G = { e: null, sc: 1, ox: 0, oy: 0 };
+      function shipSpr(s, mode) {
+        let rec = SHIPC.get(s.i);
+        if (!rec) SHIPC.set(s.i, rec = {});
+        const r = rec[mode];
+        if (r && r.cf === s.cf && r.lv === s.lv && r.t === s.u[0] && r.d === s.d) return r.e;
+        const e = shipCanvas(DS[s.d], s.cf, SIM.LIVERY[s.lv], s.u[0], mode);
+        if (mode === 'map') e.l = mirror(e.cv);
+        rec[mode] = { cf: s.cf, lv: s.lv, t: s.u[0], d: s.d, e };
+        return e;
+      }
+      const designShip = d => ({ i: -1 - d, d, cf: DS[d].cfg, lv: Math.max(0, SIM.LIVERY.indexOf(DACC[DS[d].k])), u: [0, 0, 0, 0], ld: [], f: null });
+      // jobs as they sit in the slots: cabins take the cabin passengers, seats the rest, racks the cargo
+      function slotJobs(s) {
+        const pax = s.ld.filter(j => JT[j.t].p), cab = pax.filter(j => j.cb), seat = pax.filter(j => !j.cb), crg = s.ld.filter(j => !JT[j.t].p);
+        const out = [];
+        for (const ch of s.cf) out.push(ch === 'K' ? crg.shift() || null : ch === 'C' ? cab.shift() || seat.shift() || null : seat.shift() || null);
+        return out;
+      }
+      function cutGeom(w) {
+        const e = shipSpr(w.s, w.closed ? 'big' : 'cut');
+        const sc = Math.max(1, Math.min(4, Math.floor(Math.min((w.w - 16) / e.w, (w.h - 14) / e.h) * 2) / 2)); // half steps keep big ships large
+        const room = (w.w - e.w * sc) / 2;
+        const shift = w.s.f && !DS[w.s.d].climb ? Math.max(0, Math.min(room - 6, SPR.plumeBig[DS[w.s.d].f].width * sc / 2)) : 0;
+        G.e = e; G.sc = sc; G.ox = Math.round(w.x + room + shift); G.oy = Math.round(w.y + (w.h - (w.closed ? 0 : 12) - e.h * sc) / 2 + 2);
+        return G;
       }
       let stars = null;
       function buildStars(v) {
@@ -1439,7 +1739,7 @@
           y += 16;
           const here = c.sh.filter(s => !s.f && s.at === n);
           const li = list('port' + n, X + 8, y, PW - 22, Y1 - y - 92);
-          here.forEach((s, i) => row(li, i, 40, 'ps' + s.i, { icon: s.d, title: s.nm, sub: `${D(s).n} · ${s.st === 2 ? 'HOLDING (NO BERTH)' : s.rt ? 'ROUTINE' : 'DOCKED'}`, right: `${s.ld.length}/${s.cf.length}`, on: () => push({ ty: 'ship', s: s.i }) }));
+          here.forEach((s, i) => row(li, i, 40, 'ps' + s.i, { shipObj: s, title: s.nm, sub: `${D(s).n} · ${s.st === 2 ? 'HOLDING (NO BERTH)' : s.rt ? 'ROUTINE' : 'DOCKED'}`, right: `${s.ld.length}/${s.cf.length}`, on: () => push({ ty: 'ship', s: s.i }) }));
           if (!here.length) txt(X + 14, y + 8, 'No ships here.', FONT.bs, C.muted);
           const bw = (PW - 30) / 2, by = Y1 - 84;
           const jobs = P.bd.length + P.hd.length;
@@ -1500,39 +1800,40 @@
         const Dz = D(s), sl = SIM.slotsOf(s), at = N[s.at];
         const where = s.f ? `EN ROUTE TO ${N[s.f.to].n.toUpperCase()}` : `${s.st === 2 ? 'HOLDING AT' : 'DOCKED AT'} ${at.n.toUpperCase()}`;
         fullPanel(v, s.nm, `${Dz.n.toUpperCase()} · ${FAM[Dz.f].toUpperCase()} · ${where}`);
-        add({ ty: 'slots', x: 20, y: Y0 + 46, s });
-        const fuelFrac = Dz.fuel ? (s.f ? s.fu : (SIM.depotAt(c, s.at) ? Dz.fuel : s.fu)) / Dz.fuel : 0;
-        txt(v.w - 230, Y0 + 46, `ΔV ${SIM.dvCap(c, s).toFixed(1)} · FUEL`, FONT.s, C.muted);
-        bar(v.w - 120, Y0 + 47, 96, 6, fuelFrac, C.cyan);
-        const bx = v.w - 166, bw = 150;
+        const cap = SIM.shipFuel(s), fuelFrac = cap ? (s.f ? s.fu : (SIM.depotAt(c, s.at) ? cap : s.fu)) / cap : 0;
+        txt(v.w - 290, Y0 + 10, `ΔV ${SIM.dvCap(c, s).toFixed(1)}`, FONT.l, C.cyan);
+        txt(v.w - 290, Y0 + 27, 'FUEL', FONT.s, C.muted);
+        bar(v.w - 256, Y0 + 28, 110, 6, fuelFrac, C.cyan);
+        // the ship front and center, cut away to show who and what is aboard
+        const band = add({ ty: 'cut', x: 16, y: Y0 + 44, w: v.w - 32, h: s.f ? 150 : 120, s, sj: slotJobs(s) });
+        if (s.rt) routineInfo(s, 24, Y0 + 46, v);
+        const yb = Y0 + (s.f ? 200 : 170), bx = v.w - 166, bw = 73;
         if (s.f) {
           const L = s.f.L, stops = [N[L[0]].k];
           for (let i = 0; i < L.length; i += 5) stops.push(N[L[i + 1]].k);
-          let y = para(20, Y0 + 70, v.w - 60, `Route ${stops.join(' → ')}. Arrives in ${tm(s.f.arr - now)}.${s.f.tow ? ' (Under tow.)' : ''}`, FONT.b, C.text);
-          bar(20, y + 4, v.w - 60, 6, (now - s.f.t0) / (s.f.arr - s.f.t0), C.amber);
-          y += 20;
-          if (s.ld.length) y = para(20, y, v.w - 60, 'Aboard: ' + s.ld.map(j => `${JT[j.t].n} → ${N[j.d].n}`).join(', '), FONT.bs, C.muted, 15);
-          routineInfo(s, 20, Y1 - 46, v);
-          btn(v.w - 166, Y1 - 46, 150, 40, 'locate', 'SHOW ON MAP', () => { ui.stack = []; ui.tab = 0; const p = shipXY(s, now); ui.cam.tx = Math.max(-40, Math.min(MAP_X1 - v.w + 40, p.x - v.w / 2)); });
+          let y = para(20, yb - 4, bx - 40, `Route ${stops.join(' → ')}. Arrives in ${tm(s.f.arr - now)}.${s.f.tow ? ' (Under tow.)' : ''}`, FONT.b, C.text);
+          bar(20, y + 4, bx - 40, 6, (now - s.f.t0) / (s.f.arr - s.f.t0), C.amber);
+          y += 18;
+          if (s.ld.length) para(20, y, bx - 40, 'Aboard: ' + s.ld.map(j => `${JT[j.t].n} → ${N[j.d].n}`).join(', '), FONT.bs, C.muted, 15);
+          btn(bx, yb + 44, 150, 40, 'up', 'UPGRADES', () => push({ ty: 'shipup', s: s.i }));
+          btn(bx, yb, 150, 40, 'locate', 'SHOW ON MAP', () => { ui.stack = []; ui.tab = 0; const p = shipXY(s, now); ui.cam.tx = Math.max(-40, Math.min(MAP_X1 - v.w + 40, p.x - v.w / 2)); }, { hot: 1 });
           ui.live = true;
           return;
         }
         const P = c.P[s.at];
-        let by = Y0 + 62;
-        const B = (k, label, on, o) => { btn(bx, by, bw, 36, k, label, on, o); by += 40; };
-        B('fly', s.ld.length ? 'PLAN FLIGHT ▶' : 'FLY EMPTY ▶', () => push({ ty: 'dest', s: s.i, mode: 'fly' }), { hot: 1 });
+        let k = 0;
+        const B = (key, label, on, o) => { btn(bx + (k % 2) * (bw + 4), yb + Math.floor(k / 2) * 44, bw, 40, key, label, on, Object.assign({ chip: 1 }, o)); k++; };
+        B('fly', s.ld.length ? 'FLY ▶' : 'FLY EMPTY', () => push({ ty: 'dest', s: s.i, mode: 'fly' }), { hot: 1 });
         if (P && s.st === 0) B('auto', 'AUTO LOAD', () => autoLoad(s));
+        else if (s.at !== c.hq) B('tow', 'TOW TO HQ', () => confirm(`Tow ${s.nm} to ${N[c.hq].n}? Free, takes 10 minutes. Cancels its routine.`, () => SIM.tow(c, s, now)));
         if (SIM.has(c, 'plan')) {
-          if (s.rt) B('rtstop', 'STOP ROUTINE', () => { s.rt = null; s.wt = 0; toast('Routine stopped', C.muted); });
-          else B('rt', 'SET ROUTINE', () => push({ ty: 'dest', s: s.i, mode: 'rt' }));
+          if (s.rt) B('rtstop', 'STOP LOOP', () => { s.rt = null; s.wt = 0; toast('Routine stopped', C.muted); });
+          else B('rt', 'ROUTINE', () => push({ ty: 'dest', s: s.i, mode: 'rt' }));
         }
-        if (SIM.canRefitHere(c, s)) B('refit', 'REFIT SLOTS', () => push({ ty: 'refit', s: s.i, cfg: s.cf }), { dis: s.ld.length > 0, why: 'Unload first' });
-        if (s.at !== c.hq) B('tow', 'TOW TO HQ (FREE)', () => confirm(`Tow ${s.nm} to ${N[c.hq].n}? Free, takes 10 minutes. Cancels its routine.`, () => SIM.tow(c, s, now)));
-        if (by < Y1 - 40) B('sell', `SELL · CR ${cr(Dz.cost * TUNE.sellBack)}`, () => confirm(`Sell ${s.nm} for CR ${cr(Dz.cost * TUNE.sellBack)}?`, () => { if (SIM.sellShip(c, s)) { ui.stack = ui.stack.filter(q => q.ty !== 'ship'); toast(`${s.nm} sold`, C.muted); } }), { dis: s.ld.length > 0 || c.sh.length <= 1, why: s.ld.length ? 'Unload first' : 'You need at least one ship' });
-        if (s.rt) routineInfo(s, 20, Y0 + 62, v);
-        if (!P) { para(20, Y0 + 70, bx - 40, `${at.n} is not one of your ports, so ${s.nm} can't load here. Plan a flight to one of your ports.`, FONT.b, C.muted); return; }
-        if (s.st === 2) { para(20, Y0 + 70, bx - 40, `All ${SIM.berths(c, s.at)} berths at ${at.n} are taken, so ${s.nm} is holding in orbit and can't load. Buy more berths, or move a ship.`, FONT.b, C.muted); return; }
-        const li = list('ship' + s.i, 16, Y0 + 66 + (s.rt ? 26 : 0), bx - 26, Y1 - Y0 - 74 - (s.rt ? 26 : 0));
+        B('up', 'UPGRADE', () => push({ ty: 'shipup', s: s.i }));
+        if (!P) { para(20, yb, bx - 40, `${at.n} is not one of your ports, so ${s.nm} can't load here. Fly to one of your ports.`, FONT.b, C.muted); return; }
+        if (s.st === 2) { para(20, yb, bx - 40, `All ${SIM.berths(c, s.at)} berths at ${at.n} are taken, so ${s.nm} is holding in orbit and can't load. Buy more berths, or move a ship.`, FONT.b, C.muted); return; }
+        const li = list('ship' + s.i, 16, yb, bx - 26, Y1 - yb - 4);
         const avail = P.bd.concat(P.hd).sort((a, b) => a.d - b.d || b.p - a.p);
         const rows = s.ld.slice().sort((a, b) => a.d - b.d).concat(avail);
         const lc = SIM.loadCount(s);
@@ -1542,8 +1843,59 @@
           row(li, i, 40, 'j' + j.i, { job: j, sel: on, title: '→ ' + N[j.d].n, sub: jobLine(j) + (j.v ? ' · DUE ' + tm(j.da ? j.da - now : j.dl) : '') + (on ? '' : P.hd.includes(j) ? ' · TRANSFER' : ''),
             right: 'CR ' + cr(on ? SIM.payOf(c, s, j, now) : j.p), dim: full, on: () => toggleJob(s, j) });
         });
-        if (!rows.length) txt(24, Y0 + 80, 'No jobs here right now. Boards refill every few minutes.', FONT.bs, C.muted);
+        if (!rows.length) txt(24, yb + 8, 'No jobs here right now. Boards refill every few minutes.', FONT.bs, C.muted);
+        // each slot in the cutaway: A or tap unloads its job; on an empty slot it jumps to the job list
+        const g = cutGeom(band);
+        g.e.slots.forEach((q, i) => {
+          const j = band.sj[i];
+          add({ ty: 'slot', x: g.ox + q.x * g.sc, y: g.oy + g.e.iy0 * g.sc, w: q.w * g.sc, h: (g.e.iy1 - g.e.iy0) * g.sc, k: 'sl' + i, f: 1,
+            on: () => {
+              if (j) { SIM.unloadJob(c, s, j); api.sfx.tone({ f: 330, d: 0.05, v: 0.05 }); return; }
+              const r = W.find(w => w.ty === 'row' && w.ls === li && !w.dim && !w.sel);
+              if (r) ui.fk = r.k; else toast('No jobs that fit this slot', C.muted);
+            } });
+        });
         ui.live = true;
+      };
+      MODALS.shipup = (v, m) => {
+        const s = ship(m.s);
+        if (!s) { ui.stack.pop(); return; }
+        const Dz = D(s), here = SIM.canUpgradeHere(c, s), f = Dz.f;
+        fullPanel(v, `${s.nm} upgrades`, here ? `AT ${N[s.at].n.toUpperCase()} · ${FAM[f].toUpperCase()} PARTS: HULL ${c.parts[f * 3]} · DRIVE ${c.parts[f * 3 + 1]} · SYSTEMS ${c.parts[f * 3 + 2]}`
+          : 'DOCK AT ONE OF YOUR SHIPYARDS (OR RESEARCH MODULAR HULLS) TO UPGRADE');
+        add({ ty: 'cut', x: 16, y: Y0 + 44, w: v.w - 32, h: 72, s, closed: 1 });
+        const li = list('shipup' + s.i, 16, Y0 + 122, v.w - 32, Y1 - Y0 - 126);
+        const dvOf = q => { const dry = SIM.shipDry(q) + SIM.loadMass(q.ld), fu = SIM.shipFuel(q); return fu ? SIM.veOf(c, Dz) * Math.log((dry + fu) / dry) : 0; };
+        const next = k => { const q = Object.assign({}, s, { u: s.u.slice() }); q.u[k]++; return q; };
+        const eff = [
+          () => `ΔV ${dvOf(s).toFixed(1)} → ${dvOf(next(0)).toFixed(1)} WITH A FULL TANK`,
+          () => `THRUST +${s.u[1] * 10}% → +${(s.u[1] + 1) * 10}%: FASTER HARD BURNS`,
+          () => `${s.cf.length} → ${s.cf.length + 1} SLOTS (NEW CARGO MODULE, REFIT IT IF YOU LIKE)`,
+          () => `PASSENGER FARES +${s.u[3] * 8}% → +${(s.u[3] + 1) * 8}%`
+        ];
+        let i = 0;
+        SIM.SHIP_UP.forEach((U, k) => {
+          const blk = SIM.shipUpBlock(c, s, k), q = SIM.shipUpCost(c, s, k), maxed = s.u[k] >= U.max;
+          const na = (k === 2 && (Dz.fx || Dz.climb)) || (k === 3 && !/[SC]/.test(s.cf));
+          row(li, i++, 40, 'su' + k, { title: `${U.n} ${s.u[k]}/${U.max}`, sub: na ? blk.toUpperCase() : maxed ? 'FULLY UPGRADED' : eff[k](),
+            right: maxed ? 'MAX' : na ? 'N/A' : `CR ${cr(q.cr)} + ${q.n} ${PART[q.part % 3].toUpperCase()}`, dim: !!blk, hot: !blk, sel: maxed,
+            on: () => {
+              if (blk) { toast(blk, C.rose); return; }
+              if (SIM.upgradeShip(c, s, k)) { toast(`${U.n} upgraded`, C.good); api.sfx.tone({ f: 500, to: 900, d: 0.2, v: 0.06, type: 'triangle' }); }
+            } });
+        });
+        row(li, i++, 40, 'liv', { title: 'Livery', sub: here ? `REPAINT FOR CR ${cr(SIM.liveryCost(s))} · A / TAP FOR THE NEXT COLOUR` : 'REPAINT AT A SHIPYARD', swatch: SIM.LIVERY[s.lv], dim: !here,
+          on: () => { if (!here) toast('Dock at a shipyard to repaint', C.rose); else if (SIM.setLivery(c, s, (s.lv + 1) % SIM.LIVERY.length)) api.sfx.tone({ f: 700, d: 0.06, v: 0.05 }); else toast('Not enough credits', C.rose); } });
+        if (!Dz.fx) row(li, i++, 40, 'refit', { title: 'Refit slots', sub: 'SWAP SEATS, CARGO RACKS AND CABINS', dim: !SIM.canRefitHere(c, s) || s.ld.length > 0,
+          on: () => { if (!SIM.canRefitHere(c, s)) toast('Dock at a shipyard (or research Modular Hulls)', C.rose); else if (s.ld.length) toast('Unload first', C.rose); else push({ ty: 'refit', s: s.i, cfg: s.cf }); } });
+        if (!s.f && s.at !== c.hq) row(li, i++, 40, 'tow', { title: 'Tow to HQ', sub: 'FREE · 10 MINUTES · CANCELS ITS ROUTINE',
+          on: () => confirm(`Tow ${s.nm} to ${N[c.hq].n}? Free, takes 10 minutes. Cancels its routine.`, () => { SIM.tow(c, s, now); ui.stack = ui.stack.filter(q => q.ty !== 'shipup'); }) });
+        const val = Math.round(Dz.cost * TUNE.sellBack + (s.sp || 0) * 0.5), sellBlk = s.f ? 'Land first' : s.ld.length ? 'Unload first' : c.sh.length <= 1 ? 'You need at least one ship' : '';
+        row(li, i++, 40, 'sell', { title: 'Sell ship', sub: sellBlk ? sellBlk.toUpperCase() : 'GONE FOR GOOD (UPGRADES RETURN HALF THEIR COST)', right: 'CR ' + cr(val), dim: !!sellBlk,
+          on: () => {
+            if (sellBlk) { toast(sellBlk, C.rose); return; }
+            confirm(`Sell ${s.nm} for CR ${cr(val)}?`, () => { if (SIM.sellShip(c, s)) { ui.stack = ui.stack.filter(q => q.ty !== 'ship' && q.ty !== 'shipup'); toast(`${s.nm} sold`, C.muted); } });
+          } });
       };
       function routineInfo(s, x, y, v) {
         if (!s.rt) return;
@@ -1676,7 +2028,7 @@
       MODALS.design = (v, m) => {
         const d = m.d, Dz = DS[d], ok = SIM.blueprintOk(c, d);
         fullPanel(v, Dz.n, `${FAM[Dz.f].toUpperCase()} · ERA ${ROMAN[Dz.e]} · ${Dz.d.toUpperCase()}`);
-        add({ ty: 'icon', x: 24, y: Y0 + 52, d, sc: 6 });
+        add({ ty: 'cut', x: 16, y: Y0 + 44, w: v.w - 32, h: 90, s: designShip(d), closed: 1 });
         const ve = SIM.veOf(c, Dz), dv = Dz.fuel ? ve * Math.log((Dz.dry + Dz.fuel) / Dz.dry) : 0;
         const lines = [
           `SLOTS ${Dz.cfg.length} (${Dz.cfg.split('').map(q => q === 'S' ? 'SEAT' : q === 'C' ? 'CABIN' : 'CARGO').join(' ')})${Dz.fx ? ' · FIXED' : ' · REFITTABLE'}`,
@@ -1684,12 +2036,12 @@
           `LANDS ON: ${Dz.climb ? 'ELEVATOR ONLY' : ['NOTHING (ORBIT ONLY)', 'ROCKS, CERES', 'LUNA-CLASS MOONS', 'MARS', 'EARTH AND EVERYTHING'][Dz.land]}`,
           `UPKEEP CR ${cr(Dz.up)} PER FLIGHT · PRICE CR ${cr(Dz.cost)}`
         ];
-        lines.forEach((q, i) => txt(130, Y0 + 52 + i * 16, q, FONT.s, C.text));
+        lines.forEach((q, i) => txt(20, Y0 + 142 + i * 14, q, FONT.s, C.text));
         const need = Dz.rec.map((r, k) => `${c.parts[Dz.f * 3 + k]}/${r} ${PART[k].toUpperCase()}`).join(' · ');
-        txt(130, Y0 + 124, `PARTS: ${FAM[Dz.f].toUpperCase()} ${need}`, FONT.s, Dz.rec.every((r, k) => c.parts[Dz.f * 3 + k] >= r) ? C.good : C.muted);
-        if (!ok) txt(130, Y0 + 140, `BLUEPRINT: ${Dz.q[0] === '@' ? 'BUILD THE SPACE ELEVATOR' : 'RESEARCH ' + TECH[TI[Dz.q]].n.toUpperCase()}`, FONT.s, C.rose);
+        txt(20, Y0 + 200, `PARTS: ${FAM[Dz.f].toUpperCase()} ${need}`, FONT.s, Dz.rec.every((r, k) => c.parts[Dz.f * 3 + k] >= r) ? C.good : C.muted);
+        if (!ok) txt(20, Y0 + 214, `BLUEPRINT: ${Dz.q[0] === '@' ? 'BUILD THE SPACE ELEVATOR' : 'RESEARCH ' + TECH[TI[Dz.q]].n.toUpperCase()}`, FONT.s, C.rose);
         const capOk = SIM.shipCount(c) < SIM.shipCap(c);
-        if (!capOk) txt(130, Y0 + 156, `SHIP CAP ${SIM.shipCap(c)} REACHED: LEVEL UP OR SELL A SHIP`, FONT.s, C.rose);
+        if (!capOk) txt(20, Y0 + 228, `SHIP CAP ${SIM.shipCap(c)} REACHED: LEVEL UP OR SELL A SHIP`, FONT.s, C.rose);
         const fee = Math.round(Dz.cost * TUNE.assembleFee);
         btn(20, Y1 - 48, 200, 40, 'buy', `BUY NEW · CR ${cr(Dz.cost)}`, () => { const s = SIM.buyShip(c, d); if (s) { toast(`${s.nm} delivered to ${N[c.hq].n}`, C.good); pop(); } }, { hot: 1, dis: !ok || !capOk || c.cr < Dz.cost || Dz.e > c.era, why: !capOk ? 'Ship cap reached' : 'Not available' });
         btn(232, Y1 - 48, 260, 40, 'asm', `ASSEMBLE · CR ${cr(fee)} + PARTS · ${TUNE.assembleMin[Dz.e]}M`, () => { if (SIM.assemble(c, d, now)) { toast(`Assembling ${Dz.n} at ${N[c.hq].n}`, C.good); pop(); } }, { dis: !SIM.canAssemble(c, d), why: 'Needs the parts, the fee, a free ship slot and the blueprint' });
@@ -1732,7 +2084,7 @@
         c.sh.forEach((s, i) => {
           const st = s.f ? `→ ${N[s.f.to].n} · ${tm(s.f.arr - now)}` : s.st === 2 ? `HOLDING AT ${N[s.at].n}` : `DOCKED AT ${N[s.at].n}`;
           const rt = s.rt ? (s.rt.ps ? ' · ROUTINE PAUSED' : ` · ROUTINE ${N[s.rt.a].k}⇄${N[s.rt.b].k}`) : '';
-          row(li, i, 40, 'fs' + s.i, { icon: s.d, title: s.nm, sub: `${D(s).n} · ${st}${rt}`, right: `${s.ld.length}/${s.cf.length}`, hot: !s.f && s.st === 0 && !s.rt,
+          row(li, i, 40, 'fs' + s.i, { shipObj: s, title: s.nm, sub: `${D(s).n} · ${st}${rt}`, right: `${s.ld.length}/${s.cf.length}`, hot: !s.f && s.st === 0 && !s.rt,
             on: () => { if (s.f) push({ ty: 'ship', s: s.i }); else { ui.tab = 0; ui.stack = [{ ty: 'port', n: s.at }, { ty: 'ship', s: s.i }]; centerOn(s.at); ui.dirty = true; } } });
         });
         ui.live = true;
@@ -1900,7 +2252,7 @@
       function hit(x, y, all) {
         for (let i = W.length - 1; i >= 0; i--) {
           const w = W[i];
-          if (!w.f || (!all && w.l !== layer && !(w.ty === 'node' && top() && top().ty === 'port'))) continue;
+          if (!w.f || (!all && w.l !== layer && !((w.ty === 'node' || w.ty === 'tab') && top() && top().ty === 'port'))) continue;
           if (w.ls >= 0) { const L = LS[w.ls]; if (y < L.y || y > L.y + L.h) continue; }
           if (w.ty === 'node') continue;
           const X = rx(w), Y = ry(w);
@@ -2120,12 +2472,13 @@
             ctx.fillStyle = w.sel ? '#13304a' : C.panel; ctx.fillRect(X, Y, w.w, w.h);
             ctx.fillStyle = w.sel ? C.cyan : w.hot ? C.amber : C.line; ctx.fillRect(X, Y, 3, w.h);
             let tx = X + 12;
-            if (w.icon !== undefined) { drawShipIcon(ctx, DS[w.icon].k, X + 10, Y + w.h / 2 - 5, 2, false); tx = X + 40; }
+            if (w.icon !== undefined || w.shipObj) { const e = w.shipObj ? shipSpr(w.shipObj, 'map') : SPR.dmap[w.icon]; ctx.drawImage(e.cv, Math.round(X + 8 + (48 - e.w) / 2), Math.round(Y + (w.h - e.h) / 2)); tx = X + 62; }
             else if (w.part !== undefined) { ctx.fillStyle = [C.amber, C.cyan, C.torch][(w.part / 3) | 0]; ctx.fillRect(X + 12, Y + w.h / 2 - 6, 12, 12); ctx.fillStyle = C.bg; ctx.font = FONT.s; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('HDS'[w.part % 3], X + 18, Y + w.h / 2); tx = X + 34; }
             else if (w.job) { const j = w.job; ctx.fillStyle = j.v ? C.rose : JT[j.t].p ? C.cyan : j.k ? C.good : C.amber; ctx.fillRect(X + 10, Y + 9, 8, 8); if (!JT[j.t].p) { ctx.fillStyle = C.bg; ctx.fillRect(X + 12, Y + 11, 4, 1); } tx = X + 26; }
             ctx.textAlign = 'left'; ctx.textBaseline = 'top';
             ctx.font = FONT.l; ctx.fillStyle = w.dim ? C.dim : C.text; ctx.fillText(w.title, tx, Y + 6);
             ctx.font = FONT.s; ctx.fillStyle = w.dim ? C.dim : C.muted; ctx.fillText(w.sub || '', tx, Y + 22);
+            if (w.swatch) { ctx.fillStyle = w.swatch; ctx.fillRect(X + w.w - 56, Y + 8, 40, 18); ctx.fillStyle = C.bg; ctx.fillRect(X + w.w - 56, Y + 22, 40, 4); }
             if (w.right) { ctx.textAlign = 'right'; ctx.font = FONT.l; ctx.fillStyle = w.dim ? C.dim : w.sel ? C.cyan : C.amber; ctx.fillText(w.right, X + w.w - 10, Y + 6); }
             break;
           }
@@ -2155,12 +2508,38 @@
             }
             break;
           }
-          case 'icon': drawShipIcon(ctx, DS[w.d].k, X, Y, w.sc, false); break;
+          case 'cut': drawCut(ctx, w); break;
         }
       }
-      function drawShipIcon(ctx, k, x, y, sc, left) {
-        const cv = (left ? SPR.shipL : SPR.ship)[k];
-        ctx.drawImage(cv, Math.round(x), Math.round(y), cv.width * sc, cv.height * sc);
+      // the ship front and center: hangar or starfield, plume when burning, passengers and crates in their slots
+      function drawCut(ctx, w) {
+        const s = w.s, g = cutGeom(w), e = g.e, sc = g.sc;
+        ctx.save(); ctx.beginPath(); ctx.rect(w.x, w.y, w.w, w.h); ctx.clip();
+        ctx.fillStyle = s.f ? '#04060e' : '#0b1030'; ctx.fillRect(w.x, w.y, w.w, w.h);
+        if (s.f) for (let i = 0; i < 46; i++) { ctx.fillStyle = i % 6 ? '#2a3363' : '#8d95c4'; ctx.fillRect(w.x + (i * 97) % w.w, w.y + (i * 53) % w.h, 2, 2); }
+        else {
+          ctx.fillStyle = '#141b40';
+          for (let x = w.x + 12; x < w.x + w.w; x += 40) ctx.fillRect(x, w.y, 4, w.h);
+          ctx.fillStyle = '#1c2450'; ctx.fillRect(w.x, w.y + 4, w.w, 3); ctx.fillRect(w.x, w.y + w.h - 8, w.w, 3);
+        }
+        if (s.f && !DS[s.d].climb && shipXY(s, now).burn) {
+          const pc = SPR.plumeBig[DS[s.d].f];
+          ctx.drawImage(pc, g.ox - pc.width * sc, Math.round(g.oy + e.cy * sc - pc.height * sc / 2), pc.width * sc, pc.height * sc);
+        }
+        ctx.drawImage(e.cv, g.ox, g.oy, e.w * sc, e.h * sc);
+        if (!w.closed && w.sj) {
+          ctx.font = FONT.s; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+          for (let i = 0; i < w.sj.length && i < e.slots.length; i++) {
+            const j = w.sj[i];
+            if (!j) continue;
+            const sl = e.slots[i], x = g.ox + sl.x * sc;
+            if (JT[j.t].p) { const pc = SPR.pax[j.v ? 16 + (j.i & 3) : j.i & 15]; ctx.drawImage(pc, x + 4 * sc, g.oy + (e.iy1 - 8) * sc, pc.width * sc, pc.height * sc); }
+            else { const cc = SPR.crate[j.t]; ctx.drawImage(cc, x + 2 * sc, g.oy + (e.iy1 - 9) * sc, cc.width * sc, cc.height * sc); }
+            const ly = g.oy + e.h * sc + 1;
+            if (ly + 8 < w.y + w.h && sl.w * sc >= 22) { ctx.fillStyle = j.v ? C.rose : C.text; ctx.fillText(N[j.d].k, x + sl.w * sc / 2, ly); }
+          }
+        }
+        ctx.restore();
       }
       function drawHud(ctx, v) {
         ctx.fillStyle = C.bg2; ctx.fillRect(0, 0, v.w, 24);
@@ -2253,13 +2632,12 @@
           if (!s.f) continue;
           const p = shipXY(s, now), x = p.x - cx;
           if (x < -30 || x > v.w + 30) continue;
-          const k = DS[s.d].k, cv = p.right ? SPR.ship[k] : SPR.shipL[k], sw = cv.width * 2, sh = cv.height * 2;
-          const bx = Math.round(x - sw / 2), by = Math.round(p.y - sh / 2 - 8);
-          if (p.burn) {
-            const pl = SPR.plume[DS[s.d].f], pc = p.right ? pl.r : pl.l, pw = pc.width * 2;
-            ctx.drawImage(pc, p.right ? bx - pw : bx + sw, by + sh / 2 - 3, pw, 6);
+          const e = shipSpr(s, 'map'), bx = Math.round(x - e.w / 2), by = Math.round(p.y - e.h / 2 - 9);
+          if (p.burn && !DS[s.d].climb) {
+            const pl = SPR.plumeMap[DS[s.d].f], pc = p.right ? pl.r : pl.l;
+            ctx.drawImage(pc, p.right ? bx - pc.width : bx + e.w, Math.round(by + e.cy - pc.height / 2));
           }
-          ctx.drawImage(cv, bx, by, sw, sh);
+          ctx.drawImage(p.right ? e.cv : e.l, bx, by);
         }
         // uncharted regions
         for (let i = 1; i < REGIONS.length; i++) {
