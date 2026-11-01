@@ -21,6 +21,17 @@
         "hero": "games/switchboard/art/hero.png",
         "logo": "games/switchboard/art/logo.png"
       }
+    },
+    {
+      "id": "sol-tycoon",
+      "title": "Sol: Tycoon",
+      "blurb": "Run a passenger and cargo line from low Earth orbit to the moons of Jupiter.",
+      "art": {
+        "cover": "games/sol-tycoon/art/cover.png",
+        "wide": "games/sol-tycoon/art/wide.png",
+        "hero": "games/sol-tycoon/art/hero.png",
+        "logo": "games/sol-tycoon/art/logo.png"
+      }
     }
   ]
 }

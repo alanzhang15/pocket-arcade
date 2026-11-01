@@ -43,7 +43,8 @@ cloud sync, menus, and drawing the virtual cursor. Start and Select are reserved
 ## Rules for every game
 **Self-contained and offline.** One `game.js`, no libraries, no network, no external URLs, no `localStorage`
 (use `api.save/load` so sync works), no `setTimeout/setInterval` (use `dt`). Sounds come from `api.sfx`; art is drawn
-in code (canvas paths, small sprites built at startup). Keep a file under ~60 KB.
+in code (canvas paths, small sprites built at startup). Keep a file under ~60 KB (exception: `sol-tycoon`, a deep
+tycoon where performance matters more than size).
 
 **Plays everywhere.** Every action must work with (1) touch, (2) a controller alone, (3) keyboard. World is 360 units
 tall; width varies (~500 on phone portrait to ~830 on Deck/landscape phones): lay out from `view.w` in `resize()`.
