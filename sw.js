@@ -1,6 +1,6 @@
 /* Pocket Arcade service worker: precache everything, serve cache-first so games load instantly and offline.
    Deploying a change? Run `python3 tools/build.py` (bumps BUILD and refreshes ASSETS), then upload. */
-const BUILD = "e376335499";
+const BUILD = "9ebcfd510f";
 const CACHE = 'pocket-arcade-' + BUILD;
 const ASSETS = [
   "./",

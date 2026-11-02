@@ -5,8 +5,8 @@ first game in a planned *Sol* series (later: *Sol: Empires* with Belter pirates 
 with original names; real places only. Ring/protomolecule content is out of scope.
 
 ## Core loop
-License ports → open a docked ship → load jobs into its slots (seats, cabins, cargo racks) → plan the flight and set
-the **burn** → launch. Flights run on the wall clock and **always finish while the device sleeps**. Deliveries pay
+License ports → tap a docked ship to open its **live view** → **Cargo** (full-screen load sheet: cutaway on top,
+Available / Aboard tabs, Auto load) → **Plan launch** (the map becomes a route planner) → big red **LAUNCH**. Flights run on the wall clock and **always finish while the device sleeps**. Deliveries pay
 credits and XP and sometimes drop ship parts. Levels raise the ship cap. Ports have limited **berths**, and ships that
 arrive to a full port hold in orbit.
 
@@ -17,11 +17,33 @@ Range is Δv. Ships refuel at depots. For an in-space leg of distance `d` with a
 (chemical ships are almost always fuel-limited). Fuel is charged for what each flight burns, at the price where it
 filled up. Surface ascents and descents have a fixed Δv and time.
 
+Distances are constant (no transfer windows), so a route always takes the same time at the same burn.
+
+## Launch planner
+The map highlights the ports the ship can reach next, labelled with the Δv it would have left. Tap one (or move the
+highlight and press A) to add a stop; tap the last stop or press B to remove it. Each leg in the bottom panel has its
+own burn slider (left/right on the d-pad, L/R for big steps); ascents and landings show **Fixed burn**. A leg capped
+by the tank shows "Δv-limited" and a red marker at the highest burn it can afford. Totals show time, fuel, upkeep and
+profit; times are rounded minutes ("<1 min"). `SIM.planLegs()` evaluates explicit routes; `planRoute()` still fills
+the cheapest route when a ship is loaded for one destination, and drives routines.
+
+## Live ship view
+Every port has its own pre-rendered scene (`sceneCanvas`): pads stand the ship upright by a tower on the ocean
+horizon; orbital stations show the planet's limb under a docking truss; surface bases sit on regolith, dunes, ice or
+Venus's cloud deck. In flight the view follows the phase of the current leg: launch (rises off the pad, then climbs
+as the sky darkens), burn, coast, flip, decel burn, docking, landing. It animates at 30 fps only while it is open.
+
+## Inner system and missions
+The map extends sunward: Solar Watch, Mercury Orbit and Venus Polar Orbit are **drop zones** (Era II), and Ishtar
+Orbital plus the Aphrodite Aerostat (well 3) open in Era III. From Era II, Earth's orbital ports post **missions**
+(science probe, weather satellite, solar observatory) that pay 2–3× and grant RP. The ship holds at the drop zone
+until you fly it home.
+
 ## Eras (v1: I–III; IV locked)
 | Era | Gate | Default flight times |
 |---|---|---|
 | I Low Orbit | start | 25 s – ~13 min |
-| II Cislunar & Red | level 10 + Tether Materials + Space Elevator | Mars ~27–35 min (nuclear), transfer windows ±30% |
+| II Cislunar & Red | level 10 + Tether Materials + Space Elevator | Mars ~27–35 min (nuclear); Venus ~18 min |
 | III Torch Age | level 24 + Fusion Torch Drive + Phobos Torch Yards | Belt 25–40 min, Jupiter 40–60 min (torch) |
 
 ## Systems
@@ -32,7 +54,8 @@ filled up. Surface ascents and descents have a fixed Δv and time.
 - **Ports**: berths, brokerage, fuel depot, ISRU, shipyard (can be HQ), lab.
 - **Player stations** at build sites: deliver kits, then add services (depot, layover hab, repair dock, trade post).
   Services fill coffers for up to 12 h.
-- **R&D**: 36 techs in 4 branches × 3 eras, costing RP + credits + time.
+- **R&D**: 36 techs in 4 branches × 3 eras, costing RP + credits + time, shown as a tree with an icon per tech.
+- **Help**: a `?` chip on every tab opens topic help; the Controls topic shows whether a controller is detected.
 - **Routines** (Flight Planning): a ship loops between two ports and auto-loads jobs it can lift. New legs stop
   4/8/16/24 h after you were last in the game (Fleet Autonomy). Opening the game resumes them.
 - **Sandbox**: never calls `gameOver`; metrics on the Stats screen.
@@ -52,11 +75,13 @@ Each upgrade costs credits plus one part of the ship's drive family, two parts f
 ## Art
 All in-game art is generated in code at startup, with no image files, so the game stays one offline file:
 - **Planets:** `bodyCanvas()` draws them pixel by pixel with ordered dithering, at 1 pixel per world unit.
-- **Ships:** `shipCanvas()` assembles each one from modules (engine by drive family, propellant tank, one module per
-  slot, bow by design style in `DSTYLE`). It renders three sizes: `map`, `big` (closed hull) and `cut` (cutaway).
-  Every refit, hull extension, tank upgrade and livery therefore gets its own sprite.
-- **Passengers, crates, plumes and node icons:** small pixel maps (`paxCanvas`, `crateCanvas`, `plumeCanvas`,
-  `pixCanvas`).
+- **Ships:** each design has its own blueprint in `SHIP_ART`, drawn by a small `painter` (cylinders, cones, bells,
+  trusses, wings, legs, rings, domes, payload bays). `shipCanvas()` renders `big` (closed hull), `cut` (cutaway with
+  slot rects) and `icon` (menus). Refits, hull extensions, tank upgrades and liveries change the sprite. The map uses
+  a generic chevron marker in the livery colour.
+- **Passengers and cargo:** `paxSprite()` (8×12, outfit per job type, VIP in gold) and `cargoSprite()` (12×10, one
+  per cargo type); 16×16 `jobIcon()` for lists. **Research icons:** `techIcon()`.
+- **Port scenes:** `sceneCanvas()`; **plumes and node icons:** `plumeCanvas`, `pixCanvas`.
 
 `games/sol-tycoon/art/` only holds the Steam library images that `tools/render-art.mjs` makes from `art()`.
 
@@ -65,6 +90,12 @@ All in-game art is generated in code at startup, with no image files, so the gam
 burn physics, the event clock, catch-up) → `Arcade.register` (pixel art, widgets, screens, input). The company lives
 in the `main` save slot. `getState()` writes it and returns only the UI tab, because Restart clears the `run` slot.
 `def.sim` exposes `SIM` for headless balance tests.
+
+## Controls
+Touch: tap everything; drag the map; drag a leg's slider. Controller: d-pad moves the highlight, A selects, B goes
+back (removes the last stop in the planner), L/R switch tabs (cargo tabs in the cargo screen, burn steps in the
+planner), X jumps to the next idle ship, Y cycles map regions, right stick pans the map. Keyboard: arrows, Space, X,
+C, V, Q, E, Esc.
 
 ## Not yet done
 Era IV content, faction variants, hand-tuned balance beyond bot runs and spot checks.
