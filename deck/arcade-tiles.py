@@ -12,16 +12,30 @@ Run in Desktop Mode (Konsole):
 
 Options: --dry-run (show what would change), --no-restart (don't reopen Steam afterwards),
          --url <arcade url>, --no-desktop-shortcut
+
+Tiles start Chrome through a small launcher script (written next to this installer's other files). If Chrome is
+already running, for example from Desktop Mode, a plain `flatpak run` hands the page to that Chrome and exits at
+once: Steam then thinks the game closed and stops applying the tile's controller layout, so the buttons go dead.
+The launcher closes any running Chrome first, so Steam always tracks the Chrome showing the game.
 """
 import json, os, pathlib, shutil, struct, subprocess, sys, time, urllib.request, zlib
 
 ARCADE_URL = 'https://alanzhang15.github.io/pocket-arcade/'
 CHROME_FLATPAK = 'com.google.Chrome'
-DEFAULT_EXE = '"/usr/bin/flatpak"'
-DEFAULT_START = '"/usr/bin/"'
-DEFAULT_BASE_OPTS = f'run --branch=stable --arch=x86_64 --command=/app/bin/chrome --file-forwarding {CHROME_FLATPAK} @@u @@'
-CHROME_FLAGS = '--kiosk --autoplay-policy=no-user-gesture-required'
+CHROME_FLAGS = '--kiosk --autoplay-policy=no-user-gesture-required --disable-background-mode'
 MENU_TILE = 'Pocket Arcade'
+LAUNCHER_SH = f'''#!/bin/bash
+# Pocket Arcade tile launcher (written by arcade-tiles.py; rewritten on every run).
+# Steam must track the Chrome that shows the game. A Chrome that is already running would take the page and let
+# this launch exit at once, and Steam would stop applying the tile's controller layout, so close it first.
+APP={CHROME_FLATPAK}
+running() {{ flatpak ps --columns=application 2>/dev/null | grep -qx "$APP"; }}
+if running; then
+  flatpak kill "$APP" 2>/dev/null
+  for i in $(seq 1 40); do running || break; sleep 0.25; done
+fi
+exec flatpak run --branch=stable --arch=x86_64 --command=/app/bin/chrome --file-forwarding "$APP" {CHROME_FLAGS} "$@"
+'''
 
 args = sys.argv[1:]
 DRY = '--dry-run' in args
@@ -30,6 +44,7 @@ if '--url' in args:
     ARCADE_URL = args[args.index('--url') + 1].rstrip('/') + '/'
 HOME = pathlib.Path(os.environ.get('HOME', '~')).expanduser()
 STEAM = pathlib.Path(os.environ.get('ARCADE_STEAM_DIR', HOME / '.local/share/Steam'))
+LAUNCHER = HOME / '.local/share/pocket-arcade/launch-tile.sh'
 
 # ---------------------------------------------------------------- binary VDF (shortcuts.vdf)
 # Types: 0x00 map, 0x01 string, 0x02 int32, 0x03 float32, 0x07 uint64, 0x08 end of map.
@@ -128,6 +143,20 @@ def main():
         has_chrome = subprocess.run(['flatpak', 'info', CHROME_FLATPAK], capture_output=True).returncode == 0
         if not has_chrome:
             sys.exit('Google Chrome is not installed. Install it from Discover, open the arcade once, then run this again.')
+        # let flatpak Chrome enumerate controllers through udev (the usual Steam Deck gamepad fix; harmless if set)
+        override = ['flatpak', 'override', '--user', '--filesystem=/run/udev:ro', CHROME_FLATPAK]
+        if DRY:
+            say('would run: ' + ' '.join(override))
+        else:
+            subprocess.run(override, capture_output=True)
+            say('Chrome may read controller info (flatpak override for /run/udev).')
+
+    if DRY:
+        say(f'would write the tile launcher {LAUNCHER}')
+    else:
+        LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
+        LAUNCHER.write_text(LAUNCHER_SH)
+        LAUNCHER.chmod(0o755)
 
     # Steam rewrites shortcuts.vdf when it exits, so it must be closed while we write.
     was_running = steam_running()
@@ -159,13 +188,8 @@ def main():
         shortcuts = root.setdefault('shortcuts', (0x00, {}))[1]
         entries = [shortcuts[k][1] for k in sorted(shortcuts, key=lambda k: int(k) if k.isdigit() else 0)]
 
-        # reuse how Chrome was added on this Deck, if it was
-        template = next((e for e in entries if CHROME_FLATPAK in e.get('LaunchOptions', (1, ''))[1] or CHROME_FLATPAK in e.get('Exe', (1, ''))[1]), None)
-        exe = template['Exe'][1] if template else DEFAULT_EXE
-        start = template['StartDir'][1] if template else DEFAULT_START
-        base = DEFAULT_BASE_OPTS
-        if template and '@@u @@' in template.get('LaunchOptions', (1, ''))[1]:
-            base = template['LaunchOptions'][1].split('@@u @@')[0] + '@@u @@'
+        # every tile runs the launcher (it closes a running Chrome, then starts Chrome in kiosk mode)
+        exe, start = f'"{LAUNCHER}"', f'"{LAUNCHER.parent}"'
 
         wanted = [(None, MENU_TILE)] + [(g['id'], g['title']) for g in catalog]
         existing = {tile_game_id(e): e for e in entries if our_tile(e)}
@@ -178,7 +202,7 @@ def main():
             keep.append(e)
 
         for gid, title in wanted:
-            opts = f'{base} {CHROME_FLAGS} "{tile_url(gid)}"'
+            opts = f'"{tile_url(gid)}"'
             e = existing.get(gid or '')
             if e is None:
                 appid = shortcut_appid(exe, title)
@@ -189,11 +213,11 @@ def main():
                 keep.append(e)
                 changes.append(f'add tile "{title}"')
             else:
-                if e['AppName'][1] != title or e['LaunchOptions'][1] != opts:
+                if 'appid' not in e:  # pin the id before Exe changes, so artwork and controller settings stay with it
+                    e['appid'] = I(signed32(shortcut_appid(e['Exe'][1], e['AppName'][1])))
+                if e['AppName'][1] != title or e['LaunchOptions'][1] != opts or e['Exe'][1] != exe:
                     changes.append(f'update tile "{title}"')
-                e['AppName'] = S(title); e['LaunchOptions'] = S(opts)
-                if 'appid' not in e:
-                    e['appid'] = I(signed32(shortcut_appid(e['Exe'][1], title)))
+                e['AppName'] = S(title); e['LaunchOptions'] = S(opts); e['Exe'] = S(exe); e['StartDir'] = S(start)
             appid = unsigned32(e['appid'][1])
             # artwork: files are named after the shortcut's appid
             g = next((x for x in catalog if x['id'] == gid), None)
@@ -240,6 +264,7 @@ def main():
         subprocess.Popen(['steam'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     say('\nDone. In Gaming Mode, set each new tile\'s controller layout once: tile > controller icon > "Gamepad".')
     say('For point-and-click games pick "Gamepad with Mouse Trackpad" so the right trackpad moves the pointer.')
+    say('Tiles now close any open Chrome before they start, so the controller layout always applies.')
 
 def install_desktop_shortcut():
     """A double-click 'Update Arcade Tiles' icon on the Desktop for next time."""

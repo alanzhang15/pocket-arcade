@@ -38,6 +38,16 @@ desktop for next time. Needs Google Chrome from Discover.
 Once per new tile, in Gaming Mode: tile → controller icon → **Gamepad** (point-and-click games:
 **Gamepad with Mouse Trackpad**). Steam doesn't let outside tools set that part.
 
+Tiles start through a small launcher (`~/.local/share/pocket-arcade/launch-tile.sh`) that first closes any Chrome
+already running. Without it, a Chrome left open from Desktop Mode takes over the launch: the screen flickers to
+black, Steam thinks the game quit, and the controller buttons stop working (touch still works). The installer also
+lets flatpak Chrome read controller info (`flatpak override --user --filesystem=/run/udev:ro com.google.Chrome`).
+
+**Buttons don't work in a tile?** Run **Update Arcade Tiles** once (it installs the launcher), or quit Chrome
+completely (Desktop Mode → close every window, then quit it from the system tray) and launch the tile again from
+Gaming Mode. Last resort: give the tile a keyboard layout in Steam Input. The arcade's keys are d-pad → arrow keys,
+A → Space, B → X, X → C, Y → V, L → Q, R → E, Start → Esc.
+
 Controls everywhere: d-pad or left stick moves through menus, A selects, B goes back, Start pauses,
 Select (or Y) opens settings from the menu.
 
